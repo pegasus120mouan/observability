@@ -5,6 +5,6 @@ api_url: http://127.0.0.1:8000/api/v1
 enrollment_token: ""
 agent_id: ""
 api_key: ""
-heartbeat_interval: 30
+heartbeat_interval: 10
 hostname: ""
 verify_ssl: true

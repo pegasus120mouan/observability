@@ -44,7 +44,7 @@ if (($config['agent_id'] ?? '') === '' || ($config['api_key'] ?? '') === '') {
     $config = registerAgent($apiUrl, $config, $configPath);
 }
 
-$interval = max(5, (int) ($config['heartbeat_interval'] ?? 30));
+$interval = max(5, (int) ($config['heartbeat_interval'] ?? 10));
 
 do {
     heartbeat($apiUrl, $config);
@@ -92,7 +92,7 @@ function registerAgent(string $apiUrl, array $config, string $configPath): array
     $data = $response['data'] ?? [];
     $config['agent_id'] = (string) ($data['agent_id'] ?? '');
     $config['api_key'] = (string) ($data['api_key'] ?? '');
-    $config['heartbeat_interval'] = (string) (($data['config']['heartbeat_interval'] ?? $config['heartbeat_interval']) ?: '30');
+    $config['heartbeat_interval'] = (string) (($data['config']['heartbeat_interval'] ?? $config['heartbeat_interval']) ?: '10');
     $config['enrollment_token'] = '';
 
     writeSimpleYaml($configPath, $config);
@@ -256,6 +256,13 @@ function collectHostMetrics(): array
         $metrics[] = ['type' => 'cpu', 'name' => 'usage', 'value' => $cpu, 'unit' => 'percent'];
     }
 
+    $network = collectNetwork();
+
+    if ($network !== null) {
+        $metrics[] = ['type' => 'network', 'name' => 'rx_bytes', 'value' => $network['rx'], 'unit' => 'bytes'];
+        $metrics[] = ['type' => 'network', 'name' => 'tx_bytes', 'value' => $network['tx'], 'unit' => 'bytes'];
+    }
+
     if (function_exists('sys_getloadavg')) {
         $load = sys_getloadavg();
 
@@ -285,16 +292,98 @@ function collectCpu(): ?float
         return null;
     }
 
-    $stat = @file_get_contents('/proc/stat');
+    $first = readProcStat();
 
-    if (! is_string($stat) || preg_match('/^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/', $stat, $matches) !== 1) {
+    if ($first === null) {
         return null;
     }
 
-    $idle = (float) $matches[4];
-    $total = (float) $matches[1] + (float) $matches[2] + (float) $matches[3] + $idle;
+    usleep(400000);
 
-    return $total > 0 ? round((1 - ($idle / $total)) * 100, 2) : null;
+    $second = readProcStat();
+
+    if ($second === null) {
+        return null;
+    }
+
+    $idleDelta = $second['idle'] - $first['idle'];
+    $totalDelta = $second['total'] - $first['total'];
+
+    if ($totalDelta <= 0) {
+        return 0.0;
+    }
+
+    return round((1 - ($idleDelta / $totalDelta)) * 100, 2);
+}
+
+/**
+ * @return array{idle: float, total: float}|null
+ */
+function readProcStat(): ?array
+{
+    $stat = @file_get_contents('/proc/stat');
+
+    if (! is_string($stat) || preg_match('/^cpu\s+(.+)$/m', $stat, $matches) !== 1) {
+        return null;
+    }
+
+    $parts = preg_split('/\s+/', trim($matches[1])) ?: [];
+    $user = (float) ($parts[0] ?? 0);
+    $nice = (float) ($parts[1] ?? 0);
+    $system = (float) ($parts[2] ?? 0);
+    $idle = (float) ($parts[3] ?? 0);
+    $iowait = (float) ($parts[4] ?? 0);
+    $irq = (float) ($parts[5] ?? 0);
+    $softirq = (float) ($parts[6] ?? 0);
+    $steal = (float) ($parts[7] ?? 0);
+    $idleAll = $idle + $iowait;
+    $total = $user + $nice + $system + $idleAll + $irq + $softirq + $steal;
+
+    return [
+        'idle' => $idleAll,
+        'total' => $total,
+    ];
+}
+
+/**
+ * @return array{rx: float, tx: float}|null
+ */
+function collectNetwork(): ?array
+{
+    if (PHP_OS_FAMILY === 'Windows') {
+        return null;
+    }
+
+    $info = @file_get_contents('/proc/net/dev');
+
+    if (! is_string($info)) {
+        return null;
+    }
+
+    $rx = 0.0;
+    $tx = 0.0;
+
+    foreach (explode("\n", $info) as $line) {
+        if (strpos($line, ':') === false) {
+            continue;
+        }
+
+        [$iface, $rest] = explode(':', $line, 2);
+
+        if (trim($iface) === 'lo') {
+            continue;
+        }
+
+        $cols = preg_split('/\s+/', trim($rest)) ?: [];
+
+        $rx += (float) ($cols[0] ?? 0);
+        $tx += (float) ($cols[8] ?? 0);
+    }
+
+    return [
+        'rx' => $rx,
+        'tx' => $tx,
+    ];
 }
 
 /**

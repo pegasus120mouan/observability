@@ -59,6 +59,8 @@ Route::middleware(['auth', 'active.user', 'tenant'])->group(function () {
     Route::resource('users', UserController::class)->except(['show']);
 
     Route::get('hosts', [HostController::class, 'index'])->name('hosts.index');
+    Route::get('hosts/live', [HostController::class, 'liveIndex'])->name('hosts.live-index');
+    Route::get('hosts/{host}/live', [HostController::class, 'live'])->name('hosts.live');
     Route::get('hosts/{host}', [HostController::class, 'show'])->name('hosts.show');
     Route::put('hosts/{host}', [HostController::class, 'update'])->name('hosts.update');
 

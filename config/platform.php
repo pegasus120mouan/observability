@@ -26,7 +26,7 @@ return [
     ],
 
     'agents' => [
-        'heartbeat_interval_seconds' => (int) env('PLATFORM_AGENT_HEARTBEAT_INTERVAL', 30),
+        'heartbeat_interval_seconds' => (int) env('PLATFORM_AGENT_HEARTBEAT_INTERVAL', 10),
         'offline_after_minutes' => (int) env('PLATFORM_AGENT_OFFLINE_AFTER', 5),
         'heartbeat_rate_limit' => (int) env('PLATFORM_AGENT_HEARTBEAT_RATE_LIMIT', 60),
         'register_rate_limit' => (int) env('PLATFORM_AGENT_REGISTER_RATE_LIMIT', 10),

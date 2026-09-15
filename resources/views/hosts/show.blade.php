@@ -1,32 +1,40 @@
 @extends('layouts.app', ['title' => $host->displayName()])
 
 @section('content')
+    <div
+        class="host-live"
+        data-live-host="{{ route('hosts.live', $host) }}"
+        data-live-range="{{ $range }}"
+    >
     <div class="mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
         <a href="{{ route('hosts.index') }}" class="small text-decoration-none"><i class="bi bi-arrow-left"></i> All hosts</a>
-        <form method="GET" class="d-flex gap-2">
-            <select class="form-select form-select-sm" name="range" onchange="this.form.submit()">
-                <option value="1h" @selected($range === '1h')>Last 1 hour</option>
-                <option value="6h" @selected($range === '6h')>Last 6 hours</option>
-                <option value="24h" @selected($range === '24h')>Last 24 hours</option>
-            </select>
-        </form>
+        <div class="d-flex gap-2 align-items-center">
+            <span class="badge text-bg-success" data-live-indicator>Live</span>
+            <form method="GET" class="d-flex gap-2">
+                <select class="form-select form-select-sm" name="range" onchange="this.form.submit()">
+                    <option value="1h" @selected($range === '1h')>Last 1 hour</option>
+                    <option value="6h" @selected($range === '6h')>Last 6 hours</option>
+                    <option value="24h" @selected($range === '24h')>Last 24 hours</option>
+                </select>
+            </form>
+        </div>
     </div>
 
     <div class="row g-3 mb-3">
         <div class="col-md-3">
-            <x-metric-card label="CPU" :value="isset($usage['cpu']) ? number_format($usage['cpu'], 1) : null" hint="Latest sample" />
+            <x-metric-card data-live-metric="cpu" label="CPU" :value="isset($usage['cpu']) ? number_format($usage['cpu'], 1) : null" hint="Updated every 5s" />
         </div>
         <div class="col-md-3">
-            <x-metric-card label="Memory" :value="isset($usage['memory']) ? number_format($usage['memory'], 1) : null" hint="Latest sample" />
+            <x-metric-card data-live-metric="memory" label="Memory" :value="isset($usage['memory']) ? number_format($usage['memory'], 1) : null" hint="Updated every 5s" />
         </div>
         <div class="col-md-3">
-            <x-metric-card label="Disk" :value="isset($usage['disk']) ? number_format($usage['disk'], 1) : null" hint="Latest sample" />
+            <x-metric-card data-live-metric="disk" label="Disk" :value="isset($usage['disk']) ? number_format($usage['disk'], 1) : null" hint="Updated every 5s" />
         </div>
         <div class="col-md-3">
             <div class="stat-card">
                 <div>
                     <div class="stat-card-label">Status</div>
-                    <div class="mt-1"><x-status-badge :value="$host->status->label()" :variant="$host->status->badgeVariant()" /></div>
+                    <div class="mt-1"><x-status-badge data-live-status :value="$host->status->label()" :variant="$host->status->badgeVariant()" /></div>
                 </div>
             </div>
         </div>
@@ -34,16 +42,16 @@
 
     <div class="row g-3 mb-3">
         <div class="col-lg-6">
-            <x-metric-chart title="CPU usage" :chart="$cpuChart" hint="{{ $range }}" />
+            <x-metric-chart title="CPU usage" chart-key="cpu" :chart="$cpuChart" hint="{{ $range }}" />
         </div>
         <div class="col-lg-6">
-            <x-metric-chart title="Memory usage" :chart="$memoryChart" hint="{{ $range }}" />
+            <x-metric-chart title="Memory usage" chart-key="memory" :chart="$memoryChart" hint="{{ $range }}" />
         </div>
         <div class="col-lg-6">
-            <x-metric-chart title="Disk usage" :chart="$diskChart" hint="{{ $range }}" />
+            <x-metric-chart title="Disk usage" chart-key="disk" :chart="$diskChart" hint="{{ $range }}" />
         </div>
         <div class="col-lg-6">
-            <x-metric-chart title="Network received" :chart="$networkInChart" hint="{{ $range }}" />
+            <x-metric-chart title="Network received" chart-key="network" :chart="$networkInChart" hint="{{ $range }}" />
         </div>
     </div>
 
@@ -204,5 +212,6 @@
                 </tbody>
             </table>
         </div>
+    </div>
     </div>
 @endsection

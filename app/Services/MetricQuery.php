@@ -123,10 +123,56 @@ class MetricQuery
      */
     public function latestUsage(Host $host): array
     {
-        $samples = $this->latestUsageByHost([$host->id], now()->subMinutes(15))->get($host->id, collect());
+        $usage = [];
 
-        return $samples
-            ->mapWithKeys(fn (MetricSample $sample): array => [$sample->metric_type->value => (float) $sample->value])
-            ->all();
+        foreach ([MetricType::Cpu, MetricType::Memory, MetricType::Disk] as $type) {
+            $value = MetricSample::query()
+                ->where('host_id', $host->id)
+                ->where('metric_type', $type)
+                ->where('metric_name', 'usage')
+                ->orderByDesc('collected_at')
+                ->orderByDesc('id')
+                ->value('value');
+
+            if ($value !== null) {
+                $usage[$type->value] = (float) $value;
+            }
+        }
+
+        return $usage;
+    }
+
+    /**
+     * @return array{
+     *     usage: array{cpu: float|null, memory: float|null, disk: float|null},
+     *     status: string,
+     *     status_label: string,
+     *     status_variant: string,
+     *     last_seen_at: string|null,
+     *     charts: array<string, array{labels: list<string>, values: list<float|null>, label: string, unit: string}>
+     * }
+     */
+    public function liveSnapshot(Host $host, Carbon $from, Carbon $to): array
+    {
+        $host->refresh();
+        $usage = $this->latestUsage($host);
+
+        return [
+            'usage' => [
+                'cpu' => $usage['cpu'] ?? null,
+                'memory' => $usage['memory'] ?? null,
+                'disk' => $usage['disk'] ?? null,
+            ],
+            'status' => $host->status->value,
+            'status_label' => $host->status->label(),
+            'status_variant' => $host->status->badgeVariant(),
+            'last_seen_at' => $host->last_seen_at?->toIso8601String(),
+            'charts' => [
+                'cpu' => $this->chart($host, MetricType::Cpu, 'usage', $from, $to),
+                'memory' => $this->chart($host, MetricType::Memory, 'usage', $from, $to),
+                'disk' => $this->chart($host, MetricType::Disk, 'usage', $from, $to),
+                'network' => $this->chart($host, MetricType::Network, 'rx_bytes', $from, $to),
+            ],
+        ];
     }
 }

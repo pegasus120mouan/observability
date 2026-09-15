@@ -16,7 +16,7 @@
         </div>
     </div>
 
-    <div class="panel p-0">
+    <div class="panel p-0" data-live-hosts="{{ route('hosts.live-index') }}">
         <div class="table-responsive">
             <table class="table table-hover align-middle mb-0">
                 <thead>
@@ -33,7 +33,7 @@
                 </thead>
                 <tbody>
                     @forelse ($hosts as $host)
-                        <tr>
+                        <tr data-host-id="{{ $host->id }}">
                             <td>
                                 <div class="d-flex align-items-center gap-2">
                                     <x-os-logo :os="$host->operating_system" />
@@ -45,7 +45,7 @@
                             </td>
                             <td>{{ $host->ip_address ?? '—' }}</td>
                             <td>{{ $host->environment->label() }}</td>
-                            <td>
+                            <td data-host-col="status">
                                 <x-status-badge :value="$host->status->label()" :variant="$host->status->badgeVariant()" />
                             </td>
                             @php
@@ -54,10 +54,10 @@
                                 $memory = $samples->first(fn ($sample) => $sample->metric_type === App\Enums\MetricType::Memory)?->value;
                                 $disk = $samples->first(fn ($sample) => $sample->metric_type === App\Enums\MetricType::Disk)?->value;
                             @endphp
-                            <td>{{ $cpu === null ? '—' : number_format($cpu, 1).'%' }}</td>
-                            <td>{{ $memory === null ? '—' : number_format($memory, 1).'%' }}</td>
-                            <td>{{ $disk === null ? '—' : number_format($disk, 1).'%' }}</td>
-                            <td>{{ $host->last_seen_at?->diffForHumans() ?? 'Never' }}</td>
+                            <td data-host-col="cpu">{{ $cpu === null ? '—' : number_format($cpu, 1).'%' }}</td>
+                            <td data-host-col="memory">{{ $memory === null ? '—' : number_format($memory, 1).'%' }}</td>
+                            <td data-host-col="disk">{{ $disk === null ? '—' : number_format($disk, 1).'%' }}</td>
+                            <td data-host-col="last-seen">{{ $host->last_seen_at?->diffForHumans() ?? 'Never' }}</td>
                         </tr>
                     @empty
                         <tr>

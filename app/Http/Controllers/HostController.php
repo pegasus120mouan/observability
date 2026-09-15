@@ -12,6 +12,7 @@ use App\Models\Host;
 use App\Services\LogQuery;
 use App\Services\MetricQuery;
 use App\Support\TenantContext;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -32,7 +33,7 @@ class HostController extends Controller
 
         $latest = $metricQuery->latestUsageByHost(
             $hosts->pluck('id')->all(),
-            now()->subMinutes(15),
+            now()->subHours(6),
         );
 
         $counts = Host::query()
@@ -57,12 +58,7 @@ class HostController extends Controller
 
         $host->load('agent');
 
-        $hours = match ($request->query('range', '6h')) {
-            '1h' => 1,
-            '24h' => 24,
-            default => 6,
-        };
-        $from = now()->subHours($hours);
+        $from = now()->subHours($this->rangeHours($request->query('range', '6h')));
         $to = now();
 
         return view('hosts.show', [
@@ -98,5 +94,62 @@ class HostController extends Controller
         $host->update($request->safe()->only(['display_name', 'environment']));
 
         return back()->with('status', 'Host updated.');
+    }
+
+    public function live(Request $request, Host $host, MetricQuery $metricQuery): JsonResponse
+    {
+        $this->authorize('view', $host);
+
+        return response()->json($metricQuery->liveSnapshot(
+            $host,
+            now()->subHours($this->rangeHours($request->query('range', '6h'))),
+            now(),
+        ));
+    }
+
+    public function liveIndex(Request $request, TenantContext $tenantContext, MetricQuery $metricQuery): JsonResponse
+    {
+        $this->authorize('viewAny', Host::class);
+
+        abort_if($tenantContext->organization() === null && $request->user()?->isSuperAdmin() !== true, 404);
+
+        $ids = collect(explode(',', (string) $request->query('ids', '')))
+            ->map(fn (string $id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->take(50)
+            ->values();
+
+        $hosts = Host::query()
+            ->whereIn('id', $ids->all())
+            ->orderBy('id')
+            ->get();
+
+        return response()->json([
+            'hosts' => $hosts->mapWithKeys(function (Host $host) use ($metricQuery): array {
+                $usage = $metricQuery->latestUsage($host);
+
+                return [
+                    $host->id => [
+                        'cpu' => $usage['cpu'] ?? null,
+                        'memory' => $usage['memory'] ?? null,
+                        'disk' => $usage['disk'] ?? null,
+                        'status' => $host->status->value,
+                        'status_label' => $host->status->label(),
+                        'status_variant' => $host->status->badgeVariant(),
+                        'last_seen_at' => $host->last_seen_at?->diffForHumans(),
+                    ],
+                ];
+            }),
+        ]);
+    }
+
+    private function rangeHours(?string $range): int
+    {
+        return match ($range) {
+            '1h' => 1,
+            '24h' => 24,
+            default => 6,
+        };
     }
 }

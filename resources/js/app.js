@@ -181,7 +181,7 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
         .reduce((max, value) => (Number.isFinite(Number(value)) && Number(value) > max ? Number(value) : max), 0);
     const usageScale = unit === 'percent' && peak >= 20;
 
-    new Chart(canvas, {
+    const chart = new Chart(canvas, {
         type,
         data: {
             labels: config.labels || [],
@@ -288,4 +288,140 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
             },
         },
     });
+
+    canvas._sahaChart = chart;
 });
+
+const formatLivePercent = (value) => {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+        return '—';
+    }
+
+    return `${Number(value).toFixed(1)}<span class="stat-card-hint">%</span>`;
+};
+
+const applyStatusBadge = (element, label, variant) => {
+    if (!element) {
+        return;
+    }
+
+    element.textContent = label;
+    element.className = `badge text-bg-${variant}`;
+};
+
+const refreshHostLive = async (root) => {
+    const url = new URL(root.getAttribute('data-live-host'), window.location.origin);
+    url.searchParams.set('range', root.getAttribute('data-live-range') || '6h');
+
+    const response = await fetch(url.toString(), {
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    });
+
+    if (!response.ok) {
+        return;
+    }
+
+    const payload = await response.json();
+
+    root.querySelectorAll('[data-live-metric]').forEach((card) => {
+        const key = card.getAttribute('data-live-metric');
+        const target = card.querySelector('[data-live-value]');
+
+        if (target) {
+            target.innerHTML = formatLivePercent(payload.usage?.[key]);
+        }
+    });
+
+    applyStatusBadge(
+        root.querySelector('[data-live-status]'),
+        payload.status_label,
+        payload.status_variant,
+    );
+
+    Object.entries(payload.charts || {}).forEach(([key, chartConfig]) => {
+        const canvas = root.querySelector(`[data-metric-chart][data-chart-key="${key}"]`);
+        const chart = canvas?._sahaChart;
+
+        if (!chart || !chartConfig) {
+            return;
+        }
+
+        chart.data.labels = chartConfig.labels || [];
+        chart.data.datasets[0].data = chartConfig.values || [];
+        chart.update('none');
+    });
+};
+
+const refreshHostsIndex = async (root) => {
+    const ids = [...root.querySelectorAll('[data-host-id]')]
+        .map((row) => row.getAttribute('data-host-id'))
+        .filter(Boolean)
+        .join(',');
+
+    if (ids === '') {
+        return;
+    }
+
+    const url = new URL(root.getAttribute('data-live-hosts'), window.location.origin);
+    url.searchParams.set('ids', ids);
+
+    const response = await fetch(url.toString(), {
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    });
+
+    if (!response.ok) {
+        return;
+    }
+
+    const payload = await response.json();
+
+    Object.entries(payload.hosts || {}).forEach(([id, host]) => {
+        const row = root.querySelector(`[data-host-id="${id}"]`);
+
+        if (!row) {
+            return;
+        }
+
+        ['cpu', 'memory', 'disk'].forEach((key) => {
+            const cell = row.querySelector(`[data-host-col="${key}"]`);
+
+            if (cell) {
+                cell.textContent = host[key] === null || host[key] === undefined
+                    ? '—'
+                    : `${Number(host[key]).toFixed(1)}%`;
+            }
+        });
+
+        const seen = row.querySelector('[data-host-col="last-seen"]');
+
+        if (seen && host.last_seen_at) {
+            seen.textContent = host.last_seen_at;
+        }
+
+        applyStatusBadge(
+            row.querySelector('[data-host-col="status"] .badge'),
+            host.status_label,
+            host.status_variant,
+        );
+    });
+};
+
+const startLivePolling = (element, tick) => {
+    const run = async () => {
+        if (document.hidden) {
+            return;
+        }
+
+        try {
+            await tick(element);
+        } catch (error) {
+            console.warn('Live metrics refresh failed', error);
+        }
+    };
+
+    run();
+    window.setInterval(run, 5000);
+};
+
+document.querySelectorAll('[data-live-host]').forEach((root) => startLivePolling(root, refreshHostLive));
+document.querySelectorAll('[data-live-hosts]').forEach((root) => startLivePolling(root, refreshHostsIndex));
