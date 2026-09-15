@@ -86,6 +86,7 @@ class ApplicationController extends Controller
             'recent' => $snapshot['recent'],
             'hasHttpSamples' => $snapshot['has_http_samples'],
             'runtime' => $application->runtime_stats ?? [],
+            'health' => $snapshot['health'],
         ]);
     }
 
@@ -100,9 +101,9 @@ class ApplicationController extends Controller
         return response()->json([
             ...$snapshot,
             'runtime' => $application->runtime_stats ?? [],
-            'status' => $application->status->value,
-            'status_label' => $application->status->label(),
-            'status_variant' => $application->status->badgeVariant(),
+            'status' => $snapshot['health']['status'],
+            'status_label' => $snapshot['health']['status_label'],
+            'status_variant' => $snapshot['health']['status_variant'],
             'last_seen_at' => $application->last_seen_at?->diffForHumans(),
         ]);
     }

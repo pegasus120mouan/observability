@@ -119,7 +119,13 @@ const formatTimeLabel = (label) => {
         return label;
     }
 
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const options = { hour: '2-digit', minute: '2-digit' };
+
+    if (date.getSeconds() !== 0) {
+        options.second = '2-digit';
+    }
+
+    return date.toLocaleTimeString([], options);
 };
 
 const formatTooltipTitle = (label) => {
@@ -134,6 +140,7 @@ const formatTooltipTitle = (label) => {
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
+        second: '2-digit',
     });
 };
 
@@ -169,6 +176,18 @@ Chart.defaults.font.family = "'IBM Plex Sans', 'Segoe UI', sans-serif";
 Chart.defaults.font.size = 11;
 Chart.defaults.animation = false;
 
+const applyChartEmpty = (canvas, config) => {
+    const overlay = canvas.closest('.metric-chart')?.querySelector('[data-chart-empty]');
+
+    if (!overlay) {
+        return;
+    }
+
+    const message = config?.empty || '';
+    overlay.textContent = message;
+    overlay.hidden = !message;
+};
+
 const mountMetricChart = (canvas, config) => {
     if (canvas._sahaChart) {
         canvas._sahaChart.destroy();
@@ -180,6 +199,7 @@ const mountMetricChart = (canvas, config) => {
     const filled = config.fill !== false && type === 'line' && series.length === 1;
     const showLegend = config.legend === true || series.length > 1;
     const stacked = config.stacked === true;
+    const histogram = config.histogram === true;
     const peak = series
         .flatMap((item) => item.values || [])
         .reduce((max, value) => (Number.isFinite(Number(value)) && Number(value) > max ? Number(value) : max), 0);
@@ -199,10 +219,10 @@ const mountMetricChart = (canvas, config) => {
                         backgroundColor: color,
                         hoverBackgroundColor: color,
                         borderWidth: 0,
-                        borderRadius: 0,
-                        barPercentage: 0.9,
-                        categoryPercentage: 0.9,
-                        maxBarThickness: stacked ? 16 : 10,
+                        borderRadius: histogram ? 1 : 0,
+                        barPercentage: histogram ? 1 : 0.86,
+                        categoryPercentage: histogram ? 0.94 : 0.88,
+                        maxBarThickness: histogram ? 28 : stacked ? 16 : 10,
                     };
                 }
 
@@ -221,6 +241,7 @@ const mountMetricChart = (canvas, config) => {
                     tension: 0.2,
                     cubicInterpolationMode: 'monotone',
                     spanGaps: true,
+                    skipNull: true,
                 };
             }),
         },
@@ -252,6 +273,7 @@ const mountMetricChart = (canvas, config) => {
                     cornerRadius: 8,
                     padding: 10,
                     displayColors: showLegend,
+                    filter: (item) => item.parsed.y !== null && item.parsed.y !== undefined,
                     callbacks: {
                         title: (items) => formatTooltipTitle(items[0]?.label ?? ''),
                         label: (item) => `${item.dataset.label}: ${formatTick(item.parsed.y, unit)}`,
@@ -264,7 +286,7 @@ const mountMetricChart = (canvas, config) => {
                     border: { display: false },
                     ticks: {
                         color: muted(),
-                        maxTicksLimit: 8,
+                        maxTicksLimit: histogram ? 7 : 8,
                         maxRotation: 0,
                         autoSkip: true,
                         callback(value) {
@@ -283,7 +305,14 @@ const mountMetricChart = (canvas, config) => {
                         color: muted(),
                         maxTicksLimit: 5,
                         padding: 8,
-                        callback: (value) => formatTick(value, unit),
+                        precision: unit === 'count' ? 0 : undefined,
+                        callback: (value) => {
+                            if (unit === 'count' && !Number.isInteger(Number(value))) {
+                                return '';
+                            }
+
+                            return formatTick(value, unit);
+                        },
                     },
                     grid: {
                         color: colorWithAlpha(grid(), 0.55),
@@ -295,6 +324,7 @@ const mountMetricChart = (canvas, config) => {
     });
 
     canvas._sahaChart = chart;
+    applyChartEmpty(canvas, config);
 };
 
 const updateMetricChart = (canvas, chartConfig) => {
@@ -316,6 +346,7 @@ const updateMetricChart = (canvas, chartConfig) => {
         chart.data.datasets[index].data = item.values || [];
     });
     chart.update('none');
+    applyChartEmpty(canvas, chartConfig);
 };
 
 document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
@@ -429,7 +460,7 @@ const refreshHostsIndex = async (root) => {
 
 const formatLiveCount = (value) => Number(value || 0).toLocaleString();
 
-const formatLiveRate = (value) => `${Number(value || 0).toFixed(1)}%`;
+const formatLiveRate = (value) => `${Number(value || 0).toFixed(2)}%`;
 
 const formatLiveMs = (value) => `${Number(value || 0).toLocaleString()} ms`;
 
@@ -457,7 +488,7 @@ const renderRecentRequests = (tbody, rows) => {
         const cell = document.createElement('td');
         cell.colSpan = 6;
         cell.className = 'text-secondary';
-        cell.textContent = 'Waiting for live HTTP samples. The collector tails Apache access logs and polls server-status every 2 seconds.';
+        cell.textContent = 'Waiting for live HTTP samples from the host access log.';
         row.appendChild(cell);
         tbody.appendChild(row);
 
@@ -466,18 +497,35 @@ const renderRecentRequests = (tbody, rows) => {
 
     rows.forEach((hit) => {
         const row = document.createElement('tr');
-        [
-            ['text-nowrap small', hit.occurred_at_label || ''],
-            ['', hit.service || ''],
-            ['small text-break', hit.resource || ''],
-            ['text-nowrap', hit.duration_label || '—'],
-            ['', hit.method || '—'],
-        ].forEach(([className, text]) => {
-            const cell = document.createElement('td');
-            cell.className = className;
-            cell.textContent = text;
-            row.appendChild(cell);
-        });
+
+        const timeCell = document.createElement('td');
+        timeCell.className = 'text-nowrap request-time';
+        timeCell.textContent = hit.occurred_at_label || '';
+        row.appendChild(timeCell);
+
+        const serviceCell = document.createElement('td');
+        serviceCell.className = 'text-secondary';
+        serviceCell.textContent = hit.service || '';
+        row.appendChild(serviceCell);
+
+        const resourceCell = document.createElement('td');
+        const resource = document.createElement('code');
+        resource.className = 'request-resource';
+        resource.textContent = hit.resource || '';
+        resourceCell.appendChild(resource);
+        row.appendChild(resourceCell);
+
+        const durationCell = document.createElement('td');
+        durationCell.className = 'text-nowrap text-secondary';
+        durationCell.textContent = hit.duration_label || '—';
+        row.appendChild(durationCell);
+
+        const methodCell = document.createElement('td');
+        const method = document.createElement('span');
+        method.className = 'request-method';
+        method.textContent = hit.method || '—';
+        methodCell.appendChild(method);
+        row.appendChild(methodCell);
 
         const statusCell = document.createElement('td');
         const badge = document.createElement('span');
@@ -515,7 +563,7 @@ const refreshApplicationLive = async (root) => {
         if (key === 'error_rate') {
             target.textContent = formatLiveRate(summary.error_rate);
         } else if (key === 'response_time_avg' || key === 'response_time_p95') {
-            target.textContent = formatLiveMs(summary[key]);
+            target.textContent = summary.has_duration ? formatLiveMs(summary[key]) : '—';
         } else if (key === 'req_per_sec') {
             const value = payload.runtime?.[key];
             target.textContent = value === null || value === undefined ? '—' : Number(value).toFixed(2);
@@ -526,6 +574,50 @@ const refreshApplicationLive = async (root) => {
             target.textContent = formatLiveCount(summary[key]);
         }
     });
+
+    root.querySelectorAll('[data-live-kpi-inline]').forEach((node) => {
+        const key = node.getAttribute('data-live-kpi-inline');
+        const value = payload.runtime?.[key];
+        node.textContent = value === null || value === undefined ? '—' : formatLiveCount(value);
+    });
+
+    const workerBar = root.querySelector('[data-live-worker-bar]');
+
+    if (workerBar) {
+        const busy = Number(payload.runtime?.busy_workers || 0);
+        const idle = Number(payload.runtime?.idle_workers || 0);
+        const total = busy + idle;
+        workerBar.style.width = total > 0 ? `${Math.round((100 * busy) / total)}%` : '0%';
+    }
+
+    const requestHint = root.querySelector('[data-live-chart-hint="requests"]');
+
+    if (requestHint) {
+        requestHint.textContent = `${formatLiveCount(summary.request_count)} total`;
+    }
+
+    const errorHint = root.querySelector('[data-live-chart-hint="errors"]');
+
+    if (errorHint) {
+        const clientErrors = Number(summary.client_error_count || 0);
+        errorHint.textContent = clientErrors > 0
+            ? `${formatLiveCount(summary.error_count)} 5xx · ${formatLiveCount(clientErrors)} 4xx`
+            : `${formatLiveCount(summary.error_count)} 5xx`;
+    }
+
+    const latencyHint = root.querySelector('[data-live-chart-hint="latency"]');
+
+    if (latencyHint) {
+        latencyHint.textContent = summary.has_duration
+            ? (payload.has_http_samples ? 'p50 / p75 / p90 / p95 / p99 / Max' : 'Average / P95')
+            : 'No duration in access log';
+    }
+
+    const recentCount = root.querySelector('[data-live-recent-count]');
+
+    if (recentCount) {
+        recentCount.textContent = `${formatLiveCount((payload.recent || []).length)} shown`;
+    }
 
     applyStatusBadge(
         root.querySelector('[data-live-status]'),

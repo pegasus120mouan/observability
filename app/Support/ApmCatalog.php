@@ -47,14 +47,20 @@ final class ApmCatalog
         };
     }
 
-    public static function bucketMinutesForRange(string $range): int
+    public static function bucketSecondsForRange(string $range): int
     {
         return match ($range) {
-            '15m', '1h' => 1,
-            '6h' => 5,
-            '24h' => 15,
-            default => 1,
+            '15m' => 15,
+            '1h' => 60,
+            '6h' => 300,
+            '24h' => 900,
+            default => 15,
         };
+    }
+
+    public static function bucketMinutesForRange(string $range): int
+    {
+        return max(1, (int) round(self::bucketSecondsForRange($range) / 60));
     }
 
     public static function warningErrorRate(): float

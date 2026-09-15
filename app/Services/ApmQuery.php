@@ -32,10 +32,21 @@ class ApmQuery
 
     /**
      * @return array{
-     *     summary: array{request_count: int, error_count: int, error_rate: float, response_time_avg: int, response_time_p95: int},
+     *     summary: array{
+     *         request_count: int,
+     *         error_count: int,
+     *         client_error_count: int,
+     *         failed_count: int,
+     *         error_rate: float,
+     *         client_error_rate: float,
+     *         response_time_avg: int,
+     *         response_time_p95: int,
+     *         has_duration: bool
+     *     },
      *     charts: array{requests: array<string, mixed>, errors: array<string, mixed>, latency: array<string, mixed>},
      *     recent: list<array<string, mixed>>,
-     *     has_http_samples: bool
+     *     has_http_samples: bool,
+     *     health: array{status: string, status_label: string, status_variant: string}
      * }
      */
     public function snapshot(Application $application, Carbon $from, string $range): array
@@ -48,16 +59,29 @@ class ApmQuery
             ->get(['occurred_at', 'method', 'resource', 'status_code', 'duration_us']);
 
         $hasHttpSamples = $requests->isNotEmpty();
+        $summary = $hasHttpSamples
+            ? $this->summaryFromRequests($requests)
+            : $this->summaryFromMetrics($application, $from);
+        $health = $summary['request_count'] > 0
+            ? ApmCatalog::statusFromSample(
+                $summary['request_count'],
+                $summary['error_count'],
+                $summary['response_time_p95'],
+            )
+            : $application->status;
 
         return [
-            'summary' => $hasHttpSamples
-                ? $this->summaryFromRequests($requests)
-                : $this->summaryFromMetrics($application, $from),
+            'summary' => $summary,
             'charts' => $hasHttpSamples
                 ? $this->chartsFromRequests($requests, $from, $range)
                 : $this->chartsFromMetrics($application, $from, $range),
             'recent' => $this->recentFrom($application, $requests),
             'has_http_samples' => $hasHttpSamples,
+            'health' => [
+                'status' => $health->value,
+                'status_label' => $health->label(),
+                'status_variant' => $health->badgeVariant(),
+            ],
         ];
     }
 
@@ -79,12 +103,25 @@ class ApmQuery
 
     /**
      * @param  Collection<int, ApplicationRequest>  $requests
-     * @return array{request_count: int, error_count: int, error_rate: float, response_time_avg: int, response_time_p95: int}
+     * @return array{
+     *     request_count: int,
+     *     error_count: int,
+     *     client_error_count: int,
+     *     failed_count: int,
+     *     error_rate: float,
+     *     client_error_rate: float,
+     *     response_time_avg: int,
+     *     response_time_p95: int,
+     *     has_duration: bool
+     * }
      */
     private function summaryFromRequests(Collection $requests): array
     {
         $requestCount = $requests->count();
-        $errorCount = $requests->filter(fn (ApplicationRequest $request): bool => $request->status_code >= 400)->count();
+        $serverErrors = $requests->filter(fn (ApplicationRequest $request): bool => $request->status_code >= 500)->count();
+        $clientErrors = $requests->filter(
+            fn (ApplicationRequest $request): bool => $request->status_code >= 400 && $request->status_code < 500
+        )->count();
         $durations = $requests
             ->filter(fn (ApplicationRequest $request): bool => $request->duration_us > 0)
             ->map(fn (ApplicationRequest $request): int => (int) round($request->duration_us / 1000))
@@ -94,10 +131,14 @@ class ApmQuery
 
         return [
             'request_count' => $requestCount,
-            'error_count' => $errorCount,
-            'error_rate' => ApmCatalog::errorRate($requestCount, $errorCount),
+            'error_count' => $serverErrors,
+            'client_error_count' => $clientErrors,
+            'failed_count' => $serverErrors + $clientErrors,
+            'error_rate' => ApmCatalog::errorRate($requestCount, $serverErrors),
+            'client_error_rate' => ApmCatalog::errorRate($requestCount, $clientErrors),
             'response_time_avg' => $avg,
             'response_time_p95' => ApmCatalog::percentile($durations, 95),
+            'has_duration' => $durations !== [],
         ];
     }
 
@@ -127,9 +168,13 @@ class ApmQuery
         return [
             'request_count' => $requestCount,
             'error_count' => $errorCount,
+            'client_error_count' => 0,
+            'failed_count' => $errorCount,
             'error_rate' => ApmCatalog::errorRate($requestCount, $errorCount),
+            'client_error_rate' => 0.0,
             'response_time_avg' => $weightedAvg,
             'response_time_p95' => $latestP95,
+            'has_duration' => $weightedAvg > 0 || $latestP95 > 0,
         ];
     }
 
@@ -139,17 +184,19 @@ class ApmQuery
      */
     private function chartsFromRequests(Collection $requests, Carbon $from, string $range): array
     {
-        $labels = $this->timeline($from, now(), ApmCatalog::bucketMinutesForRange($range));
+        $bucketSeconds = ApmCatalog::bucketSecondsForRange($range);
+        $labels = $this->timeline($from, now(), $bucketSeconds);
         $requestSeries = array_fill_keys($labels, 0);
         $errorBuckets = [];
         $latencyBuckets = [];
+        $hasDuration = false;
 
         foreach ($labels as $label) {
             $latencyBuckets[$label] = [];
         }
 
         foreach ($requests as $request) {
-            $label = $this->bucketLabel($request->occurred_at, ApmCatalog::bucketMinutesForRange($range));
+            $label = $this->bucketLabel($request->occurred_at, $bucketSeconds);
 
             if (! array_key_exists($label, $requestSeries)) {
                 continue;
@@ -163,6 +210,7 @@ class ApmQuery
             }
 
             if ($request->duration_us > 0) {
+                $hasDuration = true;
                 $latencyBuckets[$label][] = $request->duration_us / 1000;
             }
         }
@@ -176,18 +224,20 @@ class ApmQuery
                 'color' => 'blue',
                 'label' => 'Requests',
                 'unit' => 'count',
+                'histogram' => true,
                 'labels' => $labels,
                 'values' => array_values($requestSeries),
             ],
             'errors' => [
                 'type' => 'bar',
                 'stacked' => true,
-                'legend' => true,
+                'legend' => $errorCodes !== [],
+                'histogram' => true,
                 'unit' => 'count',
                 'labels' => $labels,
                 'series' => $errorCodes === []
                     ? [[
-                        'label' => 'Errors',
+                        'label' => '5xx / 4xx',
                         'color' => 'red',
                         'values' => array_fill(0, count($labels), 0),
                     ]]
@@ -202,17 +252,24 @@ class ApmQuery
             'latency' => [
                 'type' => 'line',
                 'fill' => false,
-                'legend' => true,
+                'legend' => $hasDuration,
                 'unit' => 'ms',
+                'empty' => $hasDuration ? null : 'Duration is not in the access log. Add %D (Apache) or $request_time (Nginx).',
                 'labels' => $labels,
-                'series' => [
-                    $this->latencySeries('p50', 'teal', $labels, $latencyBuckets, 50),
-                    $this->latencySeries('p75', 'green', $labels, $latencyBuckets, 75),
-                    $this->latencySeries('p90', 'blue', $labels, $latencyBuckets, 90),
-                    $this->latencySeries('p95', 'yellow', $labels, $latencyBuckets, 95),
-                    $this->latencySeries('p99', 'orange', $labels, $latencyBuckets, 99),
-                    $this->latencySeries('Max', 'red', $labels, $latencyBuckets, 100),
-                ],
+                'series' => $hasDuration
+                    ? [
+                        $this->latencySeries('p50', 'teal', $labels, $latencyBuckets, 50),
+                        $this->latencySeries('p75', 'green', $labels, $latencyBuckets, 75),
+                        $this->latencySeries('p90', 'blue', $labels, $latencyBuckets, 90),
+                        $this->latencySeries('p95', 'yellow', $labels, $latencyBuckets, 95),
+                        $this->latencySeries('p99', 'orange', $labels, $latencyBuckets, 99),
+                        $this->latencySeries('Max', 'red', $labels, $latencyBuckets, 100),
+                    ]
+                    : [[
+                        'label' => 'Latency',
+                        'color' => 'blue',
+                        'values' => array_fill(0, count($labels), null),
+                    ]],
             ],
         ];
     }
@@ -229,8 +286,8 @@ class ApmQuery
             ->orderBy('id')
             ->get();
 
-        $bucketMinutes = ApmCatalog::bucketMinutesForRange($range);
-        $labels = $this->timeline($from, now(), $bucketMinutes);
+        $bucketSeconds = ApmCatalog::bucketSecondsForRange($range);
+        $labels = $this->timeline($from, now(), $bucketSeconds);
         $requestSeries = array_fill_keys($labels, 0);
         $errorBuckets = [];
         $avgNumerator = array_fill_keys($labels, 0);
@@ -238,7 +295,7 @@ class ApmQuery
         $p95Buckets = array_fill_keys($labels, []);
 
         foreach ($samples as $sample) {
-            $label = $this->bucketLabel($sample->collected_at, $bucketMinutes);
+            $label = $this->bucketLabel($sample->collected_at, $bucketSeconds);
 
             if (! array_key_exists($label, $requestSeries)) {
                 continue;
@@ -270,12 +327,17 @@ class ApmQuery
         $errorCodes = array_keys($errorBuckets);
         sort($errorCodes);
 
+        $hasDuration = $samples->contains(
+            fn (ApplicationMetric $sample): bool => $sample->response_time_avg > 0 || $sample->response_time_p95 > 0
+        );
+
         return [
             'requests' => [
                 'type' => 'bar',
                 'color' => 'blue',
                 'label' => 'Requests',
                 'unit' => 'count',
+                'histogram' => true,
                 'labels' => $labels,
                 'values' => array_values($requestSeries),
             ],
@@ -283,11 +345,12 @@ class ApmQuery
                 'type' => 'bar',
                 'stacked' => count($errorCodes) > 1,
                 'legend' => count($errorCodes) > 1,
+                'histogram' => true,
                 'unit' => 'count',
                 'labels' => $labels,
                 'series' => $errorCodes === []
                     ? [[
-                        'label' => 'Errors',
+                        'label' => '5xx / 4xx',
                         'color' => 'red',
                         'values' => array_fill(0, count($labels), 0),
                     ]]
@@ -302,17 +365,18 @@ class ApmQuery
             'latency' => [
                 'type' => 'line',
                 'fill' => false,
-                'legend' => true,
+                'legend' => $hasDuration,
                 'unit' => 'ms',
+                'empty' => $hasDuration ? null : 'No latency samples in this window.',
                 'labels' => $labels,
                 'series' => [
                     [
                         'label' => 'Average',
                         'color' => 'blue',
                         'values' => array_map(
-                            fn (string $label): int => $avgDenominator[$label] > 0
+                            fn (string $label): ?int => $avgDenominator[$label] > 0
                                 ? (int) round($avgNumerator[$label] / $avgDenominator[$label])
-                                : 0,
+                                : null,
                             $labels
                         ),
                     ],
@@ -320,8 +384,8 @@ class ApmQuery
                         'label' => 'P95',
                         'color' => 'yellow',
                         'values' => array_map(
-                            fn (string $label): int => $p95Buckets[$label] === []
-                                ? 0
+                            fn (string $label): ?int => $p95Buckets[$label] === []
+                                ? null
                                 : (int) round(max($p95Buckets[$label])),
                             $labels
                         ),
@@ -343,7 +407,7 @@ class ApmQuery
             ->values()
             ->map(fn (ApplicationRequest $request): array => [
                 'occurred_at' => $request->occurred_at?->toIso8601String(),
-                'occurred_at_label' => $request->occurred_at?->format('M j H:i:s'),
+                'occurred_at_label' => $request->occurred_at?->format('H:i:s'),
                 'service' => $application->name,
                 'resource' => $request->resource,
                 'duration_us' => $request->duration_us,
@@ -357,47 +421,46 @@ class ApmQuery
     /**
      * @return list<string>
      */
-    private function timeline(Carbon $from, Carbon $to, int $bucketMinutes): array
+    private function timeline(Carbon $from, Carbon $to, int $bucketSeconds): array
     {
-        $cursor = $from->copy()->seconds(0)->microsecond(0);
-        $cursor->minute((int) (intdiv($cursor->minute, $bucketMinutes) * $bucketMinutes));
+        $start = intdiv($from->getTimestamp(), $bucketSeconds) * $bucketSeconds;
+        $cursor = Carbon::createFromTimestamp($start, $from->getTimezone());
         $labels = [];
 
         while ($cursor <= $to) {
             $labels[] = $cursor->toIso8601String();
-            $cursor->addMinutes($bucketMinutes);
+            $cursor->addSeconds($bucketSeconds);
         }
 
         return $labels;
     }
 
-    private function bucketLabel(?Carbon $time, int $bucketMinutes): string
+    private function bucketLabel(?Carbon $time, int $bucketSeconds): string
     {
         if ($time === null) {
             return '';
         }
 
-        $cursor = $time->copy()->seconds(0)->microsecond(0);
-        $cursor->minute((int) (intdiv($cursor->minute, $bucketMinutes) * $bucketMinutes));
+        $start = intdiv($time->getTimestamp(), $bucketSeconds) * $bucketSeconds;
 
-        return $cursor->toIso8601String();
+        return Carbon::createFromTimestamp($start, $time->getTimezone())->toIso8601String();
     }
 
     /**
      * @param  list<string>  $labels
      * @param  array<string, list<float>>  $latencyBuckets
-     * @return array{label: string, color: string, values: list<int>}
+     * @return array{label: string, color: string, values: list<int|null>}
      */
     private function latencySeries(string $label, string $color, array $labels, array $latencyBuckets, float $percentile): array
     {
         return [
             'label' => $label,
             'color' => $color,
-            'values' => array_map(function (string $bucket) use ($latencyBuckets, $percentile): int {
+            'values' => array_map(function (string $bucket) use ($latencyBuckets, $percentile): ?int {
                 $values = $latencyBuckets[$bucket] ?? [];
 
                 if ($values === []) {
-                    return 0;
+                    return null;
                 }
 
                 if ($percentile >= 100) {

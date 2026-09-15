@@ -56,7 +56,7 @@ class IngestHttpRequestsAction
             $codeKey = (string) $statusCode;
             $statusCodes[$codeKey] = ($statusCodes[$codeKey] ?? 0) + 1;
 
-            if ($statusCode >= 400) {
+            if ($statusCode >= 500) {
                 $errorCount++;
             }
 
@@ -97,12 +97,11 @@ class IngestHttpRequestsAction
         }
 
         $application->forceFill([
-            ...($requestCount > 0 ? [
-                'status' => ApmCatalog::statusFromSample($requestCount, $errorCount, $p95),
-            ] : []),
             'runtime_stats' => $this->runtimeStats($sample, $application->runtime_stats ?? []),
             'last_seen_at' => $now,
         ])->save();
+
+        $this->refreshWindowStatus($application);
 
         return [
             'inserted' => $requestCount,
@@ -158,6 +157,34 @@ class IngestHttpRequestsAction
         $application->save();
 
         return $application;
+    }
+
+    private function refreshWindowStatus(Application $application): void
+    {
+        $requests = ApplicationRequest::query()
+            ->withoutGlobalScopes()
+            ->where('application_id', $application->id)
+            ->where('occurred_at', '>=', now()->subMinutes(15))
+            ->get(['status_code', 'duration_us']);
+
+        if ($requests->isEmpty()) {
+            return;
+        }
+
+        $serverErrors = $requests->filter(fn (ApplicationRequest $request): bool => $request->status_code >= 500)->count();
+        $durations = $requests
+            ->filter(fn (ApplicationRequest $request): bool => $request->duration_us > 0)
+            ->map(fn (ApplicationRequest $request): int => (int) round($request->duration_us / 1000))
+            ->values()
+            ->all();
+
+        $application->forceFill([
+            'status' => ApmCatalog::statusFromSample(
+                $requests->count(),
+                $serverErrors,
+                ApmCatalog::percentile($durations, 95),
+            ),
+        ])->save();
     }
 
     private function method(mixed $method): ?string

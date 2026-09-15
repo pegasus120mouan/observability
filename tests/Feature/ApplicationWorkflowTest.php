@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\ApplicationStatus;
 use App\Enums\ApplicationType;
 use App\Enums\AuditAction;
 use App\Enums\RoleName;
@@ -132,7 +133,8 @@ class ApplicationWorkflowTest extends TestCase
             ->assertSee('2.74 ms')
             ->assertSee('p50 / p75 / p90 / p95 / p99 / Max')
             ->assertSee('Requests / sec')
-            ->assertSee('Busy workers')
+            ->assertSee('Workers')
+            ->assertSee('5xx / requests')
             ->assertSee('4.20');
 
         $this->actingAsMember($admin, $organization)
@@ -140,12 +142,89 @@ class ApplicationWorkflowTest extends TestCase
             ->assertOk()
             ->assertJsonPath('summary.request_count', 2)
             ->assertJsonPath('summary.error_count', 1)
+            ->assertJsonPath('summary.client_error_count', 0)
+            ->assertJsonPath('summary.has_duration', true)
             ->assertJsonPath('charts.requests.type', 'bar')
+            ->assertJsonPath('charts.requests.histogram', true)
             ->assertJsonPath('charts.latency.series.0.label', 'p50')
             ->assertJsonPath('recent.0.resource', '/login')
             ->assertJsonPath('recent.0.status_code', 500)
+            ->assertJsonPath('health.status', ApplicationStatus::Critical->value)
+            ->assertJsonPath('status', ApplicationStatus::Critical->value)
             ->assertJsonPath('runtime.req_per_sec', 4.2)
             ->assertJsonPath('runtime.busy_workers', 2);
+    }
+
+    public function test_client_errors_do_not_mark_the_application_unhealthy(): void
+    {
+        $organization = Organization::factory()->create();
+        $admin = $this->createMember(RoleName::Admin, $organization);
+        $application = Application::factory()->forOrganization($organization)->create([
+            'name' => 'Apache',
+            'type' => ApplicationType::Apache,
+            'status' => ApplicationStatus::Critical,
+        ]);
+        ApplicationRequest::factory()->forApplication($application)->create([
+            'occurred_at' => now()->subSeconds(4),
+            'method' => 'GET',
+            'resource' => '/',
+            'status_code' => 200,
+            'duration_us' => 1200,
+        ]);
+        ApplicationRequest::factory()->forApplication($application)->create([
+            'occurred_at' => now()->subSeconds(2),
+            'method' => 'GET',
+            'resource' => '/missing',
+            'status_code' => 404,
+            'duration_us' => 800,
+        ]);
+
+        $this->actingAsMember($admin, $organization)
+            ->get(route('applications.show', $application))
+            ->assertOk()
+            ->assertSee('0 5xx')
+            ->assertSee('1 4xx')
+            ->assertSee('Healthy')
+            ->assertSee('5xx / requests');
+
+        $this->actingAsMember($admin, $organization)
+            ->getJson(route('applications.live', ['application' => $application, 'range' => '15m']))
+            ->assertOk()
+            ->assertJsonPath('summary.request_count', 2)
+            ->assertJsonPath('summary.error_count', 0)
+            ->assertJsonPath('summary.client_error_count', 1)
+            ->assertJsonPath('summary.error_rate', 0)
+            ->assertJsonPath('health.status', ApplicationStatus::Healthy->value)
+            ->assertJsonPath('status', ApplicationStatus::Healthy->value);
+    }
+
+    public function test_show_hides_latency_when_duration_is_not_logged(): void
+    {
+        $organization = Organization::factory()->create();
+        $admin = $this->createMember(RoleName::Admin, $organization);
+        $application = Application::factory()->forOrganization($organization)->create([
+            'name' => 'Apache',
+            'type' => ApplicationType::Apache,
+        ]);
+        ApplicationRequest::factory()->forApplication($application)->create([
+            'occurred_at' => now()->subSeconds(3),
+            'method' => 'GET',
+            'resource' => '/',
+            'status_code' => 200,
+            'duration_us' => 0,
+        ]);
+
+        $this->actingAsMember($admin, $organization)
+            ->get(route('applications.show', $application))
+            ->assertOk()
+            ->assertSee('No duration in access log')
+            ->assertSee('Duration is not in the access log');
+
+        $this->actingAsMember($admin, $organization)
+            ->getJson(route('applications.live', ['application' => $application, 'range' => '15m']))
+            ->assertOk()
+            ->assertJsonPath('summary.has_duration', false)
+            ->assertJsonPath('charts.latency.empty', 'Duration is not in the access log. Add %D (Apache) or $request_time (Nginx).');
     }
 
     public function test_application_show_escapes_http_resource(): void

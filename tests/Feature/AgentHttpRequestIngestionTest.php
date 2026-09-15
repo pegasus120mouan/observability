@@ -171,6 +171,54 @@ class AgentHttpRequestIngestionTest extends TestCase
         $this->assertSame(0, ApplicationMetric::query()->withoutGlobalScopes()->count());
     }
 
+    public function test_not_found_responses_do_not_mark_the_application_critical(): void
+    {
+        $organization = Organization::factory()->create();
+        ['host' => $host, 'agent' => $agent, 'api_key' => $apiKey] = $this->createMonitoredHost($organization, [
+            'hostname' => 'webserver',
+        ]);
+        $application = Application::factory()->forOrganization($organization)->create([
+            'host_id' => $host->id,
+            'name' => 'Apache',
+            'slug' => 'apache-webserver',
+            'type' => ApplicationType::Apache,
+            'discovered' => true,
+            'status' => ApplicationStatus::Critical,
+        ]);
+
+        $this->postJson('/api/v1/agent/http-requests', [
+            'name' => 'Apache',
+            'type' => 'apache',
+            'requests' => [
+                [
+                    'occurred_at' => now()->subSeconds(2)->toIso8601String(),
+                    'method' => 'GET',
+                    'resource' => '/',
+                    'status_code' => 200,
+                    'duration_us' => 900,
+                ],
+                [
+                    'occurred_at' => now()->subSecond()->toIso8601String(),
+                    'method' => 'GET',
+                    'resource' => '/favicon.ico',
+                    'status_code' => 404,
+                    'duration_us' => 400,
+                ],
+            ],
+        ], $this->agentHeaders($agent, $apiKey))
+            ->assertStatus(202);
+
+        $this->assertDatabaseHas('application_metrics', [
+            'application_id' => $application->id,
+            'request_count' => 2,
+            'error_count' => 0,
+        ]);
+        $this->assertSame(
+            ApplicationStatus::Healthy,
+            Application::query()->withoutGlobalScopes()->find($application->id)?->status,
+        );
+    }
+
     public function test_http_request_ingest_requires_agent_credentials(): void
     {
         $this->postJson('/api/v1/agent/http-requests', [
