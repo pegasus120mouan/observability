@@ -17,6 +17,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'resource',
     'status_code',
     'duration_us',
+    'client_ip',
+    'geo_country',
+    'geo_city',
+    'geo_lat',
+    'geo_lng',
 ])]
 class ApplicationRequest extends Model
 {
@@ -41,6 +46,8 @@ class ApplicationRequest extends Model
             'occurred_at' => 'datetime',
             'status_code' => 'integer',
             'duration_us' => 'integer',
+            'geo_lat' => 'float',
+            'geo_lng' => 'float',
         ];
     }
 

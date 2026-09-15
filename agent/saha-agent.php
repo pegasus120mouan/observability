@@ -442,16 +442,16 @@ function tailAccessLog(string $path, array $state): array
 }
 
 /**
- * @return array{occurred_at: string, method: string, resource: string, status_code: int, duration_us: int}|null
+ * @return array{occurred_at: string, method: string, resource: string, status_code: int, duration_us: int, client_ip: ?string}|null
  */
 function parseAccessLogLine(string $line): ?array
 {
-    if (preg_match('/\[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} [+\-]\d{4})\]\s+"(\S+)\s+(\S+)(?:\s+HTTP\/[0-9.]+)?"\s+(\d{3})\s+(\S+)(.*)$/', $line, $matches) !== 1) {
+    if (preg_match('/(?:^|\s)((?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}) - - \[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} [+\-]\d{4})\]\s+"(\S+)\s+(\S+)(?:\s+HTTP\/[0-9.]+)?"\s+(\d{3})\s+(\S+)(.*)$/', $line, $matches) !== 1) {
         return null;
     }
 
-    $occurred = \DateTime::createFromFormat('d/M/Y:H:i:s O', $matches[1]);
-    $resource = $matches[3];
+    $occurred = DateTime::createFromFormat('d/M/Y:H:i:s O', $matches[2]);
+    $resource = $matches[4];
     $query = strpos($resource, '?');
 
     if ($query !== false) {
@@ -463,18 +463,25 @@ function parseAccessLogLine(string $line): ?array
     }
 
     $durationUs = 0;
-    $rest = ltrim($matches[6]);
+    $rest = ltrim($matches[7]);
 
     if ($rest !== '' && isset($rest[0]) && $rest[0] !== '"' && preg_match('/^(\d+(?:\.\d+)?)/', $rest, $duration) === 1) {
         $durationUs = durationToMicroseconds($duration[1]);
     }
 
+    $clientIp = $matches[1];
+
+    if (filter_var($clientIp, FILTER_VALIDATE_IP) === false) {
+        $clientIp = null;
+    }
+
     return [
-        'occurred_at' => $occurred instanceof \DateTime ? $occurred->format('c') : gmdate('c'),
-        'method' => strtoupper($matches[2]),
+        'occurred_at' => $occurred instanceof DateTime ? $occurred->format('c') : gmdate('c'),
+        'method' => strtoupper($matches[3]),
         'resource' => $resource !== '' ? $resource : '/',
-        'status_code' => (int) $matches[4],
+        'status_code' => (int) $matches[5],
         'duration_us' => $durationUs,
+        'client_ip' => $clientIp,
     ];
 }
 

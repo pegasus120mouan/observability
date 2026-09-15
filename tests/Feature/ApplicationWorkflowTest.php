@@ -113,6 +113,9 @@ class ApplicationWorkflowTest extends TestCase
             'resource' => '/index.php',
             'status_code' => 200,
             'duration_us' => 2740,
+            'geo_country' => 'FR',
+            'geo_lat' => 46.2276,
+            'geo_lng' => 2.2137,
         ]);
         ApplicationRequest::factory()->forApplication($application)->create([
             'occurred_at' => now()->subSeconds(3),
@@ -120,6 +123,9 @@ class ApplicationWorkflowTest extends TestCase
             'resource' => '/login',
             'status_code' => 500,
             'duration_us' => 18400,
+            'geo_country' => 'US',
+            'geo_lat' => 37.751,
+            'geo_lng' => -97.822,
         ]);
 
         $this->actingAsMember($admin, $organization)
@@ -135,6 +141,10 @@ class ApplicationWorkflowTest extends TestCase
             ->assertSee('Requests / sec')
             ->assertSee('Workers')
             ->assertSee('5xx / requests')
+            ->assertSee('Client map')
+            ->assertSee('Top locations')
+            ->assertSee('France')
+            ->assertSee('United States')
             ->assertSee('4.20');
 
         $this->actingAsMember($admin, $organization)
@@ -152,7 +162,10 @@ class ApplicationWorkflowTest extends TestCase
             ->assertJsonPath('health.status', ApplicationStatus::Critical->value)
             ->assertJsonPath('status', ApplicationStatus::Critical->value)
             ->assertJsonPath('runtime.req_per_sec', 4.2)
-            ->assertJsonPath('runtime.busy_workers', 2);
+            ->assertJsonPath('runtime.busy_workers', 2)
+            ->assertJsonPath('usage_map.client_locations', 2)
+            ->assertJsonPath('recent.0.location_label', 'United States')
+            ->assertJsonMissingPath('recent.0.client_ip');
     }
 
     public function test_client_errors_do_not_mark_the_application_unhealthy(): void

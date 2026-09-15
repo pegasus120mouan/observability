@@ -24,6 +24,11 @@ class ApplicationRequestFactory extends Factory
             'resource' => '/health',
             'status_code' => 200,
             'duration_us' => 2740,
+            'client_ip' => null,
+            'geo_country' => null,
+            'geo_city' => null,
+            'geo_lat' => null,
+            'geo_lng' => null,
             'created_at' => now(),
         ];
     }

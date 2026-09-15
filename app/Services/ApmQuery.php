@@ -6,11 +6,15 @@ use App\Models\Application;
 use App\Models\ApplicationMetric;
 use App\Models\ApplicationRequest;
 use App\Support\ApmCatalog;
+use App\Support\GeoIp\CountryCatalog;
+use App\Support\GeoIpLocator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 class ApmQuery
 {
+    public function __construct(public GeoIpLocator $locator) {}
+
     /**
      * @param  list<int>  $applicationIds
      * @return Collection<int, ApplicationMetric>
@@ -46,6 +50,7 @@ class ApmQuery
      *     charts: array{requests: array<string, mixed>, errors: array<string, mixed>, latency: array<string, mixed>},
      *     recent: list<array<string, mixed>>,
      *     has_http_samples: bool,
+     *     usage_map: array<string, mixed>,
      *     health: array{status: string, status_label: string, status_variant: string}
      * }
      */
@@ -56,7 +61,7 @@ class ApmQuery
             ->where('occurred_at', '>=', $from)
             ->orderBy('occurred_at')
             ->orderBy('id')
-            ->get(['occurred_at', 'method', 'resource', 'status_code', 'duration_us']);
+            ->get(['occurred_at', 'method', 'resource', 'status_code', 'duration_us', 'geo_country', 'geo_city', 'geo_lat', 'geo_lng']);
 
         $hasHttpSamples = $requests->isNotEmpty();
         $summary = $hasHttpSamples
@@ -77,6 +82,7 @@ class ApmQuery
                 : $this->chartsFromMetrics($application, $from, $range),
             'recent' => $this->recentFrom($application, $requests),
             'has_http_samples' => $hasHttpSamples,
+            'usage_map' => $this->usageMap($application, $requests),
             'health' => [
                 'status' => $health->value,
                 'status_label' => $health->label(),
@@ -414,8 +420,111 @@ class ApmQuery
                 'duration_label' => ApmCatalog::formatDurationUs((int) $request->duration_us),
                 'method' => $request->method,
                 'status_code' => $request->status_code,
+                'location_label' => $this->locationLabel($request),
             ])
             ->all();
+    }
+
+    /**
+     * @param  Collection<int, ApplicationRequest>  $requests
+     * @return array{
+     *     origin: array{lat: float, lng: float, label: string, requests: int}|null,
+     *     points: list<array{lat: float, lng: float, label: string, requests: int, country: ?string}>,
+     *     locations: list<array{label: string, country: ?string, requests: int}>,
+     *     client_locations: int
+     * }
+     */
+    private function usageMap(Application $application, Collection $requests): array
+    {
+        $origin = $this->originFrom($application);
+        $clusters = [];
+
+        foreach ($requests as $request) {
+            if ($request->geo_lat === null || $request->geo_lng === null) {
+                continue;
+            }
+
+            $key = round((float) $request->geo_lat, 2).':'.round((float) $request->geo_lng, 2);
+            $clusters[$key] ??= [
+                'lat' => (float) $request->geo_lat,
+                'lng' => (float) $request->geo_lng,
+                'label' => $this->locationLabel($request),
+                'country' => $request->geo_country,
+                'requests' => 0,
+            ];
+            $clusters[$key]['requests']++;
+        }
+
+        $points = array_values($clusters);
+        usort($points, fn (array $left, array $right): int => $right['requests'] <=> $left['requests']);
+
+        $countries = [];
+
+        foreach ($requests as $request) {
+            $label = $this->locationLabel($request);
+
+            if ($label === null) {
+                continue;
+            }
+
+            $key = $request->geo_country ?: $label;
+            $countries[$key] ??= [
+                'label' => $label,
+                'country' => $request->geo_country,
+                'requests' => 0,
+            ];
+            $countries[$key]['requests']++;
+        }
+
+        $locations = array_values($countries);
+        usort($locations, fn (array $left, array $right): int => $right['requests'] <=> $left['requests']);
+
+        return [
+            'origin' => $origin,
+            'points' => array_slice($points, 0, 120),
+            'locations' => array_slice($locations, 0, 12),
+            'client_locations' => count($points),
+        ];
+    }
+
+    /**
+     * @return array{lat: float, lng: float, label: string, requests: int}|null
+     */
+    private function originFrom(Application $application): ?array
+    {
+        $host = $application->host;
+        $located = $this->locator->locate($host?->ip_address);
+
+        if ($located === null || $located['lat'] === null || $located['lng'] === null) {
+            return null;
+        }
+
+        return [
+            'lat' => (float) $located['lat'],
+            'lng' => (float) $located['lng'],
+            'label' => $host?->displayName() ?: $located['label'],
+            'requests' => 0,
+        ];
+    }
+
+    private function locationLabel(ApplicationRequest $request): ?string
+    {
+        if (filled($request->geo_city) && filled($request->geo_country)) {
+            $country = CountryCatalog::find((string) $request->geo_country);
+
+            return $request->geo_city.($country ? ' · '.$country['name'] : '');
+        }
+
+        if (filled($request->geo_city)) {
+            return (string) $request->geo_city;
+        }
+
+        if (filled($request->geo_country)) {
+            return CountryCatalog::find((string) $request->geo_country)['name']
+                ?? (string) $request->geo_country;
+        }
+
+        return null;
     }
 
     /**

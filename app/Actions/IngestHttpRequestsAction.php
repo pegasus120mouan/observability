@@ -9,11 +9,14 @@ use App\Models\Application;
 use App\Models\ApplicationMetric;
 use App\Models\ApplicationRequest;
 use App\Support\ApmCatalog;
+use App\Support\GeoIpLocator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 class IngestHttpRequestsAction
 {
+    public function __construct(public GeoIpLocator $locator) {}
+
     /**
      * @param  array<string, mixed>  $payload
      * @param  list<array<string, mixed>>  $requests
@@ -30,6 +33,8 @@ class IngestHttpRequestsAction
         $collectedAt ??= now();
         $now = now();
         $application = $this->resolveApplication($agent, $payload);
+        $origin = $this->locator->locate($host->ip_address);
+        $lookups = [];
         $rows = [];
         $durationsMs = [];
         $statusCodes = [];
@@ -41,6 +46,8 @@ class IngestHttpRequestsAction
             $occurredAt = isset($request['occurred_at'])
                 ? Carbon::parse((string) $request['occurred_at'])
                 : $collectedAt;
+            $clientIp = $this->clientIp($request['client_ip'] ?? null);
+            $geo = $this->geoFor($clientIp, $origin, $lookups);
 
             $rows[] = [
                 'organization_id' => $agent->organization_id,
@@ -50,6 +57,11 @@ class IngestHttpRequestsAction
                 'resource' => $this->resource((string) $request['resource']),
                 'status_code' => $statusCode,
                 'duration_us' => $durationUs,
+                'client_ip' => $clientIp,
+                'geo_country' => $geo['country'] ?? null,
+                'geo_city' => $geo['city'] ?? null,
+                'geo_lat' => $geo['lat'] ?? null,
+                'geo_lng' => $geo['lng'] ?? null,
                 'created_at' => $now,
             ];
 
@@ -185,6 +197,46 @@ class IngestHttpRequestsAction
                 ApmCatalog::percentile($durations, 95),
             ),
         ])->save();
+    }
+
+    private function clientIp(mixed $ip): ?string
+    {
+        $value = trim((string) $ip);
+
+        if ($value === '' || filter_var($value, FILTER_VALIDATE_IP) === false) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param  array{lat: float, lng: float, country: ?string, label: string}|null  $origin
+     * @param  array<string, array<string, mixed>|null>  $lookups
+     * @return array{country: ?string, city: ?string, lat: ?float, lng: ?float}
+     */
+    private function geoFor(?string $ip, ?array $origin, array &$lookups): array
+    {
+        if ($ip === null) {
+            return ['country' => null, 'city' => null, 'lat' => null, 'lng' => null];
+        }
+
+        if (! array_key_exists($ip, $lookups)) {
+            $lookups[$ip] = $this->locator->locate($ip, $origin);
+        }
+
+        $geo = $lookups[$ip];
+
+        if ($geo === null) {
+            return ['country' => null, 'city' => null, 'lat' => null, 'lng' => null];
+        }
+
+        return [
+            'country' => $geo['country'] ?? null,
+            'city' => $geo['city'] ?? null,
+            'lat' => $geo['lat'] ?? null,
+            'lng' => $geo['lng'] ?? null,
+        ];
     }
 
     private function method(mixed $method): ?string

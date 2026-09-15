@@ -387,6 +387,55 @@ body {
 .os-logo-arch { color: #1793d1; }
 .os-logo-unknown { color: #64748b; }
 
+.usage-globe-panel {
+    background:
+        radial-gradient(circle at 20% 10%, rgba(45, 212, 191, 0.08), transparent 42%),
+        var(--saha-surface);
+}
+
+.usage-globe {
+    position: relative;
+    width: 100%;
+    height: 420px;
+    cursor: grab;
+}
+
+.usage-globe:active {
+    cursor: grabbing;
+}
+
+.usage-globe canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.usage-locations {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.usage-locations li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--saha-border);
+    font-size: 0.9rem;
+}
+
+.usage-locations li:last-child {
+    border-bottom: 0;
+}
+
+.usage-location-count {
+    font-variant-numeric: tabular-nums;
+    color: var(--saha-accent);
+    font-weight: 600;
+}
+
 @media (max-width: 991.98px) {
     .app-sidebar {
         width: 280px;

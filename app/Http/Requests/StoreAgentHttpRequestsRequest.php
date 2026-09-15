@@ -30,6 +30,7 @@ class StoreAgentHttpRequestsRequest extends FormRequest
             'requests.*.resource' => ['required', 'string', 'max:512'],
             'requests.*.status_code' => ['required', 'integer'],
             'requests.*.duration_us' => ['nullable', 'integer', 'min:0', 'max:600000000'],
+            'requests.*.client_ip' => ['nullable', 'ip'],
             'sample' => ['nullable', 'array'],
             'sample.request_count' => ['nullable', 'integer', 'min:0', 'max:100000000'],
             'sample.error_count' => ['nullable', 'integer', 'min:0', 'max:100000000'],

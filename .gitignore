@@ -1,4 +1,5 @@
 *.log
+resources/geo/*.csv
 agent/saha-access-log.offset.json
 agent/saha-apache-status.json
 .DS_Store

@@ -94,6 +94,40 @@
         </div>
     @endif
 
+    @if ($application->type->collectsHttpTraffic())
+        <div class="row g-3 mb-3">
+            <div class="col-lg-8">
+                <div class="panel usage-globe-panel mb-0">
+                    <div class="panel-header">
+                        <h2 class="h6 mb-0">Client map</h2>
+                        <span class="small text-secondary" data-live-globe-hint>{{ number_format($usageMap['client_locations'] ?? 0) }} locations</span>
+                    </div>
+                    <div class="usage-globe">
+                        <canvas data-usage-globe data-config='@json($usageMap)'></canvas>
+                    </div>
+                    <p class="small text-secondary mb-0 mt-2">Each point is a client region reaching this service. Lines are request paths to the origin host.</p>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="panel h-100 mb-0">
+                    <div class="panel-header">
+                        <h2 class="h6 mb-0">Top locations</h2>
+                    </div>
+                    <ol class="usage-locations mb-0" data-live-locations>
+                        @forelse (($usageMap['locations'] ?? []) as $place)
+                            <li>
+                                <span class="usage-location-name">{{ $place['label'] }}</span>
+                                <span class="usage-location-count">{{ number_format($place['requests']) }}</span>
+                            </li>
+                        @empty
+                            <li class="text-secondary">Waiting for client IPs from the access log.</li>
+                        @endforelse
+                    </ol>
+                </div>
+            </div>
+        </div>
+    @endif
+
     <div class="row g-3 mb-3">
         <div class="col-lg-4">
             <x-metric-chart title="Requests" :chart="$charts['requests']" :hint="number_format($summary['request_count']).' total'" chart-key="requests" size="lg" />
@@ -118,6 +152,7 @@
                         <th>Time</th>
                         <th>Service</th>
                         <th>Resource</th>
+                        <th>Location</th>
                         <th>Duration</th>
                         <th>Method</th>
                         <th>Status</th>
@@ -129,6 +164,7 @@
                             <td class="text-nowrap request-time">{{ $hit['occurred_at_label'] }}</td>
                             <td class="text-secondary">{{ $hit['service'] }}</td>
                             <td><code class="request-resource">{{ $hit['resource'] }}</code></td>
+                            <td class="text-nowrap text-secondary">{{ $hit['location_label'] ?: '—' }}</td>
                             <td class="text-nowrap text-secondary">{{ $hit['duration_label'] }}</td>
                             <td><span class="request-method">{{ $hit['method'] ?: '—' }}</span></td>
                             <td>
@@ -143,7 +179,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="text-secondary">Waiting for live HTTP samples from the host access log.</td>
+                            <td colspan="7" class="text-secondary">Waiting for live HTTP samples from the host access log.</td>
                         </tr>
                     @endforelse
                 </tbody>

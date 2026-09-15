@@ -87,6 +87,7 @@ class ApplicationController extends Controller
             'hasHttpSamples' => $snapshot['has_http_samples'],
             'runtime' => $application->runtime_stats ?? [],
             'health' => $snapshot['health'],
+            'usageMap' => $snapshot['usage_map'],
         ]);
     }
 

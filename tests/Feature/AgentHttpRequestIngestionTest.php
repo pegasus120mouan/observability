@@ -219,6 +219,72 @@ class AgentHttpRequestIngestionTest extends TestCase
         );
     }
 
+    public function test_http_samples_store_client_location_for_the_usage_map(): void
+    {
+        $organization = Organization::factory()->create();
+        ['host' => $host, 'agent' => $agent, 'api_key' => $apiKey] = $this->createMonitoredHost($organization, [
+            'hostname' => 'webserver',
+            'ip_address' => '1.1.1.1',
+        ]);
+        $application = Application::factory()->forOrganization($organization)->create([
+            'host_id' => $host->id,
+            'name' => 'Apache',
+            'slug' => 'apache-webserver',
+            'type' => ApplicationType::Apache,
+            'discovered' => true,
+        ]);
+
+        $this->postJson('/api/v1/agent/http-requests', [
+            'name' => 'Apache',
+            'type' => 'apache',
+            'requests' => [
+                [
+                    'occurred_at' => now()->subSeconds(2)->toIso8601String(),
+                    'method' => 'GET',
+                    'resource' => '/',
+                    'status_code' => 200,
+                    'duration_us' => 900,
+                    'client_ip' => '8.8.8.8',
+                ],
+            ],
+        ], $this->agentHeaders($agent, $apiKey))
+            ->assertStatus(202);
+
+        $this->assertDatabaseHas('application_requests', [
+            'application_id' => $application->id,
+            'client_ip' => '8.8.8.8',
+            'geo_country' => 'US',
+        ]);
+        $this->assertNotNull(
+            ApplicationRequest::query()->withoutGlobalScopes()->where('application_id', $application->id)->value('geo_lat')
+        );
+    }
+
+    public function test_invalid_client_ip_is_rejected(): void
+    {
+        $organization = Organization::factory()->create();
+        ['agent' => $agent, 'api_key' => $apiKey] = $this->createMonitoredHost($organization);
+
+        $this->postJson('/api/v1/agent/http-requests', [
+            'name' => 'Apache',
+            'type' => 'apache',
+            'requests' => [
+                [
+                    'occurred_at' => now()->toIso8601String(),
+                    'method' => 'GET',
+                    'resource' => '/',
+                    'status_code' => 200,
+                    'duration_us' => 10,
+                    'client_ip' => 'not-an-ip',
+                ],
+            ],
+        ], $this->agentHeaders($agent, $apiKey))
+            ->assertUnprocessable()
+            ->assertJsonPath('success', false);
+
+        $this->assertSame(0, ApplicationRequest::query()->withoutGlobalScopes()->count());
+    }
+
     public function test_http_request_ingest_requires_agent_credentials(): void
     {
         $this->postJson('/api/v1/agent/http-requests', [

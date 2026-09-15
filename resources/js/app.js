@@ -1,5 +1,6 @@
 import 'bootstrap';
 import Chart from 'chart.js/auto';
+import { mountUsageGlobe, updateUsageGlobe } from './usage-globe';
 
 const cssVar = (name, fallback) =>
     getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
@@ -353,6 +354,10 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
     mountMetricChart(canvas, JSON.parse(canvas.getAttribute('data-config') || '{}'));
 });
 
+document.querySelectorAll('[data-usage-globe]').forEach((canvas) => {
+    mountUsageGlobe(canvas, JSON.parse(canvas.getAttribute('data-config') || '{}'));
+});
+
 const formatLivePercent = (value) => {
     if (value === null || value === undefined || !Number.isFinite(Number(value))) {
         return '—';
@@ -486,7 +491,7 @@ const renderRecentRequests = (tbody, rows) => {
     if (!Array.isArray(rows) || rows.length === 0) {
         const row = document.createElement('tr');
         const cell = document.createElement('td');
-        cell.colSpan = 6;
+        cell.colSpan = 7;
         cell.className = 'text-secondary';
         cell.textContent = 'Waiting for live HTTP samples from the host access log.';
         row.appendChild(cell);
@@ -515,6 +520,11 @@ const renderRecentRequests = (tbody, rows) => {
         resourceCell.appendChild(resource);
         row.appendChild(resourceCell);
 
+        const locationCell = document.createElement('td');
+        locationCell.className = 'text-nowrap text-secondary';
+        locationCell.textContent = hit.location_label || '—';
+        row.appendChild(locationCell);
+
         const durationCell = document.createElement('td');
         durationCell.className = 'text-nowrap text-secondary';
         durationCell.textContent = hit.duration_label || '—';
@@ -534,6 +544,35 @@ const renderRecentRequests = (tbody, rows) => {
         statusCell.appendChild(badge);
         row.appendChild(statusCell);
         tbody.appendChild(row);
+    });
+};
+
+const renderUsageLocations = (list, rows) => {
+    if (! list) {
+        return;
+    }
+
+    list.replaceChildren();
+
+    if (! Array.isArray(rows) || rows.length === 0) {
+        const item = document.createElement('li');
+        item.className = 'text-secondary';
+        item.textContent = 'Waiting for client IPs from the access log.';
+        list.appendChild(item);
+
+        return;
+    }
+
+    rows.forEach((place) => {
+        const item = document.createElement('li');
+        const name = document.createElement('span');
+        name.className = 'usage-location-name';
+        name.textContent = place.label || 'Unknown';
+        const count = document.createElement('span');
+        count.className = 'usage-location-count';
+        count.textContent = formatLiveCount(place.requests);
+        item.append(name, count);
+        list.appendChild(item);
     });
 };
 
@@ -634,6 +673,15 @@ const refreshApplicationLive = async (root) => {
     Object.entries(payload.charts || {}).forEach(([key, chartConfig]) => {
         updateMetricChart(root.querySelector(`[data-metric-chart][data-chart-key="${key}"]`), chartConfig);
     });
+
+    const globeHint = root.querySelector('[data-live-globe-hint]');
+
+    if (globeHint && payload.usage_map) {
+        globeHint.textContent = `${formatLiveCount(payload.usage_map.client_locations || 0)} locations`;
+    }
+
+    updateUsageGlobe(root.querySelector('[data-usage-globe]'), payload.usage_map);
+    renderUsageLocations(root.querySelector('[data-live-locations]'), payload.usage_map?.locations || []);
 
     renderRecentRequests(root.querySelector('[data-live-recent]'), payload.recent || []);
 };
