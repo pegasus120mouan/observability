@@ -187,4 +187,64 @@ class AgentHttpRequestIngestionTest extends TestCase
             ],
         ])->assertUnauthorized();
     }
+
+    public function test_agent_can_ingest_live_apache_status_without_access_log_lines(): void
+    {
+        $organization = Organization::factory()->create();
+        ['host' => $host, 'agent' => $agent, 'api_key' => $apiKey] = $this->createMonitoredHost($organization, [
+            'hostname' => 'webserver',
+        ]);
+        $application = Application::factory()->forOrganization($organization)->create([
+            'host_id' => $host->id,
+            'name' => 'Apache',
+            'slug' => 'apache-webserver',
+            'type' => ApplicationType::Apache,
+            'discovered' => true,
+        ]);
+
+        $this->postJson('/api/v1/agent/http-requests', [
+            'name' => 'Apache',
+            'type' => 'apache',
+            'sample' => [
+                'request_count' => 24,
+                'error_count' => 0,
+                'req_per_sec' => 12.5,
+                'busy_workers' => 3,
+                'idle_workers' => 7,
+            ],
+        ], $this->agentHeaders($agent, $apiKey))
+            ->assertStatus(202)
+            ->assertJsonPath('data.inserted', 24)
+            ->assertJsonPath('data.application_id', $application->id);
+
+        $this->assertSame(0, ApplicationRequest::query()->withoutGlobalScopes()->count());
+        $this->assertDatabaseHas('application_metrics', [
+            'application_id' => $application->id,
+            'request_count' => 24,
+            'error_count' => 0,
+        ]);
+
+        $fresh = Application::query()->withoutGlobalScopes()->find($application->id);
+
+        $this->assertNotNull($fresh);
+        $this->assertEqualsWithDelta(12.5, (float) $fresh->runtime_stats['req_per_sec'], 0.01);
+        $this->assertSame(3, (int) $fresh->runtime_stats['busy_workers']);
+        $this->assertSame(7, (int) $fresh->runtime_stats['idle_workers']);
+    }
+
+    public function test_empty_http_payload_is_rejected(): void
+    {
+        $organization = Organization::factory()->create();
+        ['agent' => $agent, 'api_key' => $apiKey] = $this->createMonitoredHost($organization);
+
+        $this->postJson('/api/v1/agent/http-requests', [
+            'name' => 'Apache',
+            'type' => 'apache',
+        ], $this->agentHeaders($agent, $apiKey))
+            ->assertUnprocessable()
+            ->assertJsonPath('success', false);
+
+        $this->assertSame(0, ApplicationRequest::query()->withoutGlobalScopes()->count());
+        $this->assertSame(0, ApplicationMetric::query()->withoutGlobalScopes()->count());
+    }
 }

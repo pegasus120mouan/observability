@@ -76,7 +76,7 @@ The script writes `agent_id` and `api_key` back into `agent.yml` and clears the 
 
 Windows Task Scheduler or a Linux cron can invoke `php agent/saha-agent.php --once` on the heartbeat interval if you do not want a long-running process.
 
-The collector also POSTs `/agent/metrics`, `/agent/logs`, `/agent/services`, and `/agent/http-requests` after each heartbeat. Apache and Nginx access logs are tailed from the first run (existing history is skipped). Override paths with `access_log_apache` and `access_log_nginx` in `agent.yml`. Duration is sent when the log includes Apache `%D` or Nginx `$request_time`.
+The collector POSTs `/agent/metrics`, `/agent/logs`, and `/agent/services` on the heartbeat interval, and POSTs `/agent/http-requests` every 2 seconds. Apache samples come from access logs plus `http://127.0.0.1/server-status?auto` (mod_status). The last megabyte of each access log is backfilled (last 15 minutes only). Override with `access_log_apache`, `access_log_nginx`, or `apache_status_url` in `agent.yml`. The agent user needs read access to `/var/log/apache2` (often group `adm`). Duration is sent when the log includes Apache `%D` or Nginx `$request_time`.
 
 ## Later
 

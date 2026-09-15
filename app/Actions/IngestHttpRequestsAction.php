@@ -17,9 +17,10 @@ class IngestHttpRequestsAction
     /**
      * @param  array<string, mixed>  $payload
      * @param  list<array<string, mixed>>  $requests
+     * @param  array<string, mixed>  $sample
      * @return array{inserted: int, application_id: int}
      */
-    public function handle(Agent $agent, array $payload, array $requests, ?Carbon $collectedAt = null): array
+    public function handle(Agent $agent, array $payload, array $requests, ?Carbon $collectedAt = null, array $sample = []): array
     {
         $agent->loadMissing('host');
         $host = $agent->host;
@@ -72,22 +73,34 @@ class IngestHttpRequestsAction
         $avg = $durationsMs === [] ? 0 : (int) round(array_sum($durationsMs) / count($durationsMs));
         $p95 = ApmCatalog::percentile($durationsMs, 95);
 
-        ApplicationMetric::query()->withoutGlobalScopes()->insert([
-            [
-                'organization_id' => $agent->organization_id,
-                'application_id' => $application->id,
-                'request_count' => $requestCount,
-                'error_count' => $errorCount,
-                'response_time_avg' => $avg,
-                'response_time_p95' => $p95,
-                'status_codes' => json_encode($statusCodes),
-                'collected_at' => $collectedAt,
-                'created_at' => $now,
-            ],
-        ]);
+        if ($requestCount === 0) {
+            $requestCount = max(0, (int) ($sample['request_count'] ?? 0));
+            $errorCount = max(0, (int) ($sample['error_count'] ?? 0));
+            $avg = max(0, (int) ($sample['response_time_avg'] ?? 0));
+            $p95 = max(0, (int) ($sample['response_time_p95'] ?? 0));
+        }
+
+        if ($requestCount > 0) {
+            ApplicationMetric::query()->withoutGlobalScopes()->insert([
+                [
+                    'organization_id' => $agent->organization_id,
+                    'application_id' => $application->id,
+                    'request_count' => $requestCount,
+                    'error_count' => $errorCount,
+                    'response_time_avg' => $avg,
+                    'response_time_p95' => $p95,
+                    'status_codes' => json_encode($statusCodes),
+                    'collected_at' => $collectedAt,
+                    'created_at' => $now,
+                ],
+            ]);
+        }
 
         $application->forceFill([
-            'status' => ApmCatalog::statusFromSample($requestCount, $errorCount, $p95),
+            ...($requestCount > 0 ? [
+                'status' => ApmCatalog::statusFromSample($requestCount, $errorCount, $p95),
+            ] : []),
+            'runtime_stats' => $this->runtimeStats($sample, $application->runtime_stats ?? []),
             'last_seen_at' => $now,
         ])->save();
 
@@ -167,5 +180,42 @@ class IngestHttpRequestsAction
         }
 
         return Str::substr($value, 0, 512);
+    }
+
+    /**
+     * @param  array<string, mixed>  $sample
+     * @param  array<string, mixed>  $current
+     * @return array<string, mixed>
+     */
+    private function runtimeStats(array $sample, array $current): array
+    {
+        $stats = $current;
+        $updated = false;
+
+        if (array_key_exists('req_per_sec', $sample) && $sample['req_per_sec'] !== null) {
+            $stats['req_per_sec'] = round((float) $sample['req_per_sec'], 2);
+            $updated = true;
+        }
+
+        if (array_key_exists('busy_workers', $sample) && $sample['busy_workers'] !== null) {
+            $stats['busy_workers'] = max(0, (int) $sample['busy_workers']);
+            $updated = true;
+        }
+
+        if (array_key_exists('idle_workers', $sample) && $sample['idle_workers'] !== null) {
+            $stats['idle_workers'] = max(0, (int) $sample['idle_workers']);
+            $updated = true;
+        }
+
+        if (array_key_exists('bytes_per_sec', $sample) && $sample['bytes_per_sec'] !== null) {
+            $stats['bytes_per_sec'] = round((float) $sample['bytes_per_sec'], 2);
+            $updated = true;
+        }
+
+        if ($updated) {
+            $stats['collected_at'] = now()->toIso8601String();
+        }
+
+        return $stats;
     }
 }

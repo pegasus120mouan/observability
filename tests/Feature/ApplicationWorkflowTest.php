@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\ApplicationType;
 use App\Enums\AuditAction;
 use App\Enums\RoleName;
 use App\Models\Application;
@@ -96,7 +97,15 @@ class ApplicationWorkflowTest extends TestCase
     {
         $organization = Organization::factory()->create();
         $admin = $this->createMember(RoleName::Admin, $organization);
-        $application = Application::factory()->forOrganization($organization)->create(['name' => 'Apache']);
+        $application = Application::factory()->forOrganization($organization)->create([
+            'name' => 'Apache',
+            'type' => ApplicationType::Apache,
+            'runtime_stats' => [
+                'req_per_sec' => 4.2,
+                'busy_workers' => 2,
+                'idle_workers' => 8,
+            ],
+        ]);
         ApplicationRequest::factory()->forApplication($application)->create([
             'occurred_at' => now()->subSeconds(5),
             'method' => 'GET',
@@ -121,7 +130,10 @@ class ApplicationWorkflowTest extends TestCase
             ->assertSee('GET')
             ->assertSee('POST')
             ->assertSee('2.74 ms')
-            ->assertSee('p50 / p75 / p90 / p95 / p99 / Max');
+            ->assertSee('p50 / p75 / p90 / p95 / p99 / Max')
+            ->assertSee('Requests / sec')
+            ->assertSee('Busy workers')
+            ->assertSee('4.20');
 
         $this->actingAsMember($admin, $organization)
             ->getJson(route('applications.live', ['application' => $application, 'range' => '15m']))
@@ -131,7 +143,9 @@ class ApplicationWorkflowTest extends TestCase
             ->assertJsonPath('charts.requests.type', 'bar')
             ->assertJsonPath('charts.latency.series.0.label', 'p50')
             ->assertJsonPath('recent.0.resource', '/login')
-            ->assertJsonPath('recent.0.status_code', 500);
+            ->assertJsonPath('recent.0.status_code', 500)
+            ->assertJsonPath('runtime.req_per_sec', 4.2)
+            ->assertJsonPath('runtime.busy_workers', 2);
     }
 
     public function test_application_show_escapes_http_resource(): void

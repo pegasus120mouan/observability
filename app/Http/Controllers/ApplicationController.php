@@ -75,7 +75,6 @@ class ApplicationController extends Controller
         $this->authorize('view', $application);
 
         $application->load('host');
-
         $range = $this->resolvedRange($request);
         $snapshot = $query->snapshot($application, ApmCatalog::fromForRange($range), $range);
 
@@ -86,6 +85,7 @@ class ApplicationController extends Controller
             'charts' => $snapshot['charts'],
             'recent' => $snapshot['recent'],
             'hasHttpSamples' => $snapshot['has_http_samples'],
+            'runtime' => $application->runtime_stats ?? [],
         ]);
     }
 
@@ -93,11 +93,13 @@ class ApplicationController extends Controller
     {
         $this->authorize('view', $application);
 
+        $application->refresh();
         $range = $this->resolvedRange($request);
         $snapshot = $query->snapshot($application, ApmCatalog::fromForRange($range), $range);
 
         return response()->json([
             ...$snapshot,
+            'runtime' => $application->runtime_stats ?? [],
             'status' => $application->status->value,
             'status_label' => $application->status->label(),
             'status_variant' => $application->status->badgeVariant(),

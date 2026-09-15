@@ -25,6 +25,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'description',
     'status',
     'discovered',
+    'runtime_stats',
     'last_seen_at',
 ])]
 class Application extends Model
@@ -51,6 +52,7 @@ class Application extends Model
             'environment' => HostEnvironment::class,
             'status' => ApplicationStatus::class,
             'discovered' => 'boolean',
+            'runtime_stats' => 'array',
             'last_seen_at' => 'datetime',
         ];
     }

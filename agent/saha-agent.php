@@ -45,17 +45,27 @@ if (($config['agent_id'] ?? '') === '' || ($config['api_key'] ?? '') === '') {
 }
 
 $interval = max(5, (int) ($config['heartbeat_interval'] ?? 10));
+$httpInterval = 2;
+$nextHeartbeat = 0;
 
 do {
-    heartbeat($apiUrl, $config);
-    reportMetrics($apiUrl, $config);
-    reportLogs($apiUrl, $config);
-    reportServices($apiUrl, $config);
+    $now = time();
+
+    if ($once || $now >= $nextHeartbeat) {
+        heartbeat($apiUrl, $config);
+        reportMetrics($apiUrl, $config);
+        reportLogs($apiUrl, $config);
+        reportServices($apiUrl, $config);
+        $nextHeartbeat = $now + $interval;
+    }
+
     reportHttpRequests($apiUrl, $config);
+
     if ($once) {
         break;
     }
-    sleep($interval);
+
+    sleep($httpInterval);
 } while (true);
 
 /**
@@ -213,14 +223,35 @@ function reportServices(string $apiUrl, array $config): void
 function reportHttpRequests(string $apiUrl, array $config): void
 {
     $batches = collectHttpRequests($config);
+    $apacheRuntime = collectApacheRuntime($config);
+    $batches = attachApacheRuntime($batches, $apacheRuntime);
+
+    if ($batches === []) {
+        warnMissingApacheSource();
+
+        return;
+    }
 
     foreach ($batches as $batch) {
-        $response = request('POST', $apiUrl.'/agent/http-requests', [
+        $payload = [
             'timestamp' => gmdate('c'),
             'name' => $batch['name'],
             'type' => $batch['type'],
-            'requests' => $batch['requests'],
-        ], [
+        ];
+
+        if (isset($batch['requests']) && $batch['requests'] !== []) {
+            $payload['requests'] = $batch['requests'];
+        }
+
+        if (isset($batch['sample']) && $batch['sample'] !== []) {
+            $payload['sample'] = $batch['sample'];
+        }
+
+        if (! isset($payload['requests']) && ! isset($payload['sample'])) {
+            continue;
+        }
+
+        $response = request('POST', $apiUrl.'/agent/http-requests', $payload, [
             'X-Agent-Id: '.$config['agent_id'],
             'Authorization: Bearer '.$config['api_key'],
         ]);
@@ -231,7 +262,7 @@ function reportHttpRequests(string $apiUrl, array $config): void
             continue;
         }
 
-        fwrite(STDOUT, '['.gmdate('c').'] HTTP requests '.$batch['name'].' inserted='.($response['data']['inserted'] ?? 0)."\n");
+        fwrite(STDOUT, '['.gmdate('c').'] HTTP '.$batch['name'].' inserted='.($response['data']['inserted'] ?? 0)."\n");
     }
 }
 
@@ -301,17 +332,29 @@ function httpAccessLogSources(array $config): array
         $paths = $configured !== '' ? [$configured] : $entry['defaults'];
 
         foreach ($paths as $path) {
-            if (is_readable($path)) {
-                $sources[] = [
+            if (is_file($path) && is_readable($path)) {
+                $sources[$path] = [
                     'path' => $path,
                     'name' => $entry['name'],
                     'type' => $entry['type'],
                 ];
             }
         }
+
+        if ($configured === '' && $entry['type'] === 'apache') {
+            foreach (glob('/var/log/apache2/*access*') ?: [] as $path) {
+                if (is_file($path) && is_readable($path)) {
+                    $sources[$path] = [
+                        'path' => $path,
+                        'name' => $entry['name'],
+                        'type' => $entry['type'],
+                    ];
+                }
+            }
+        }
     }
 
-    return $sources;
+    return array_values($sources);
 }
 
 /**
@@ -327,9 +370,7 @@ function tailAccessLog(string $path, array $state): array
     }
 
     if (! array_key_exists($path, $state)) {
-        $state[$path] = $size;
-
-        return ['requests' => [], 'state' => $state];
+        $state[$path] = max(0, $size - 1048576);
     }
 
     $offset = (int) $state[$path];
@@ -388,7 +429,7 @@ function tailAccessLog(string $path, array $state): array
 
         $parsed = parseAccessLogLine($line);
 
-        if ($parsed !== null) {
+        if ($parsed !== null && isRecentHttpSample($parsed['occurred_at'])) {
             $requests[] = $parsed;
         }
 
@@ -444,6 +485,202 @@ function durationToMicroseconds(string $raw): int
     }
 
     return (int) $raw;
+}
+
+function isRecentHttpSample(string $occurredAt): bool
+{
+    $timestamp = strtotime($occurredAt);
+
+    if ($timestamp === false) {
+        return true;
+    }
+
+    return $timestamp >= (time() - 900);
+}
+
+/**
+ * @param  list<array{name: string, type: string, requests?: list<array<string, mixed>>, sample?: array<string, mixed>}>  $batches
+ * @param  array<string, mixed>|null  $runtime
+ * @return list<array{name: string, type: string, requests?: list<array<string, mixed>>, sample?: array<string, mixed>}>
+ */
+function attachApacheRuntime(array $batches, ?array $runtime): array
+{
+    if ($runtime === null) {
+        return $batches;
+    }
+
+    foreach ($batches as $index => $batch) {
+        if (($batch['type'] ?? '') === 'apache') {
+            $batches[$index]['sample'] = $runtime;
+
+            return $batches;
+        }
+    }
+
+    $batches[] = [
+        'name' => 'Apache',
+        'type' => 'apache',
+        'sample' => $runtime,
+    ];
+
+    return $batches;
+}
+
+/**
+ * @param  array<string, string>  $config
+ * @return array<string, mixed>|null
+ */
+function collectApacheRuntime(array $config): ?array
+{
+    $status = fetchApacheStatus($config);
+
+    if ($status === null) {
+        return null;
+    }
+
+    $statePath = __DIR__.DIRECTORY_SEPARATOR.'saha-apache-status.json';
+    $state = readJsonFile($statePath);
+    $previous = array_key_exists('total_accesses', $state) ? (int) $state['total_accesses'] : null;
+    $total = (int) $status['total_accesses'];
+    $delta = 0;
+
+    if ($previous !== null && $total >= $previous) {
+        $delta = $total - $previous;
+    }
+
+    $state['total_accesses'] = $total;
+    writeJsonFile($statePath, $state);
+
+    $reqPerSec = $status['req_per_sec'];
+
+    if ($reqPerSec === null && $delta > 0) {
+        $reqPerSec = $delta / 2;
+    }
+
+    return [
+        'request_count' => $delta,
+        'error_count' => 0,
+        'response_time_avg' => 0,
+        'response_time_p95' => 0,
+        'req_per_sec' => $reqPerSec,
+        'busy_workers' => $status['busy_workers'],
+        'idle_workers' => $status['idle_workers'],
+        'bytes_per_sec' => $status['bytes_per_sec'],
+    ];
+}
+
+/**
+ * @param  array<string, string>  $config
+ * @return array{total_accesses: int, busy_workers: int, idle_workers: int, req_per_sec: float|null, bytes_per_sec: float|null}|null
+ */
+function fetchApacheStatus(array $config): ?array
+{
+    $urls = [];
+    $configured = trim((string) ($config['apache_status_url'] ?? ''));
+
+    if ($configured !== '') {
+        $urls[] = $configured;
+    }
+
+    $urls[] = 'http://127.0.0.1/server-status?auto';
+    $urls[] = 'http://127.0.0.1:80/server-status?auto';
+    $urls[] = 'http://localhost/server-status?auto';
+
+    foreach ($urls as $url) {
+        $body = localHttpGet($url);
+        $parsed = parseApacheStatus($body);
+
+        if ($parsed !== null) {
+            return $parsed;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * @return array{total_accesses: int, busy_workers: int, idle_workers: int, req_per_sec: float|null, bytes_per_sec: float|null}|null
+ */
+function parseApacheStatus(string $body): ?array
+{
+    if ($body === '') {
+        return null;
+    }
+
+    $total = preg_match('/Total Accesses:\s+(\d+)/', $body, $accesses) === 1 ? (int) $accesses[1] : null;
+    $busy = preg_match('/BusyWorkers:\s+(\d+)/', $body, $busyMatch) === 1 ? (int) $busyMatch[1] : null;
+    $idle = preg_match('/IdleWorkers:\s+(\d+)/', $body, $idleMatch) === 1 ? (int) $idleMatch[1] : null;
+
+    if ($total === null && $busy === null) {
+        return null;
+    }
+
+    return [
+        'total_accesses' => $total ?? 0,
+        'busy_workers' => $busy ?? 0,
+        'idle_workers' => $idle ?? 0,
+        'req_per_sec' => preg_match('/ReqPerSec:\s+([0-9.]+)/', $body, $req) === 1 ? (float) $req[1] : null,
+        'bytes_per_sec' => preg_match('/BytesPerSec:\s+([0-9.]+)/', $body, $bytes) === 1 ? (float) $bytes[1] : null,
+    ];
+}
+
+function localHttpGet(string $url): string
+{
+    if (function_exists('curl_init')) {
+        $curl = curl_init($url);
+
+        if ($curl === false) {
+            return '';
+        }
+
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 1,
+            CURLOPT_TIMEOUT => 2,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+        ]);
+
+        $response = curl_exec($curl);
+        curl_close($curl);
+
+        return is_string($response) ? $response : '';
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'timeout' => 2,
+            'ignore_errors' => true,
+        ],
+    ]);
+    $response = @file_get_contents($url, false, $context);
+
+    return is_string($response) ? $response : '';
+}
+
+function warnMissingApacheSource(): void
+{
+    static $warned = false;
+
+    if ($warned || ! apacheIsRunning()) {
+        return;
+    }
+
+    $warned = true;
+    fwrite(STDERR, 'Apache is running but no access log or server-status sample was collected. Grant read access to /var/log/apache2 (group adm) or enable mod_status for 127.0.0.1. Optional: apache_status_url in agent.yml.'."\n");
+}
+
+function apacheIsRunning(): bool
+{
+    foreach (collectRunningServices() as $service) {
+        if (($service['type'] ?? '') === 'apache') {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -1010,6 +1247,12 @@ function writeSimpleYaml(string $path, array $config): void
 
     foreach ($order as $key) {
         $lines[] = $key.': '.($config[$key] ?? '');
+    }
+
+    foreach ($config as $key => $value) {
+        if (! in_array($key, $order, true)) {
+            $lines[] = $key.': '.$value;
+        }
     }
 
     file_put_contents($path, implode(PHP_EOL, $lines).PHP_EOL);

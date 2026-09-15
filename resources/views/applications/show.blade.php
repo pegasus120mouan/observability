@@ -48,6 +48,20 @@
         </div>
     </div>
 
+    @if ($application->type->collectsHttpTraffic())
+        <div class="row g-3 mb-3">
+            <div class="col-md-4">
+                <x-stat-card data-live-kpi="req_per_sec" label="Requests / sec" :value="isset($runtime['req_per_sec']) ? number_format((float) $runtime['req_per_sec'], 2) : '—'" hint="Live from Apache" icon="bi-activity" />
+            </div>
+            <div class="col-md-4">
+                <x-stat-card data-live-kpi="busy_workers" label="Busy workers" :value="isset($runtime['busy_workers']) ? number_format((int) $runtime['busy_workers']) : '—'" hint="Live from Apache" icon="bi-people" />
+            </div>
+            <div class="col-md-4">
+                <x-stat-card data-live-kpi="idle_workers" label="Idle workers" :value="isset($runtime['idle_workers']) ? number_format((int) $runtime['idle_workers']) : '—'" hint="Live from Apache" icon="bi-pause-circle" />
+            </div>
+        </div>
+    @endif
+
     <div class="row g-3 mb-3">
         <div class="col-lg-4">
             <x-metric-chart title="Requests" :chart="$charts['requests']" :hint="number_format($summary['request_count']).' total'" chart-key="requests" />
@@ -97,7 +111,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="text-secondary">No HTTP requests in this window. The collector tails Apache and Nginx access logs on the host.</td>
+                            <td colspan="6" class="text-secondary">Waiting for live HTTP samples. The collector tails Apache access logs and polls server-status every 2 seconds.</td>
                         </tr>
                     @endforelse
                 </tbody>
@@ -129,7 +143,7 @@
             <dt class="col-sm-3">Description</dt>
             <dd class="col-sm-9">{{ $application->description ?: '—' }}</dd>
         </dl>
-        <p class="small text-secondary mb-0 mt-3">Request, error, and latency charts are built from access-log samples. Duration is shown when the log includes it.</p>
+        <p class="small text-secondary mb-0 mt-3">Request charts update every 2 seconds from access logs and Apache server-status. Duration is shown when the access log includes it.</p>
     </div>
     </div>
 @endsection

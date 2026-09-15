@@ -24,8 +24,9 @@ class HttpRequestsController extends Controller
         $result = $action->handle(
             $agent,
             $request->safe()->only(['name', 'type']),
-            $request->validated('requests'),
+            $request->validated('requests') ?? [],
             $collectedAt,
+            $request->validated('sample') ?? [],
         );
 
         return ApiResponse::success($result, 'HTTP requests accepted.', status: 202);

@@ -46,4 +46,12 @@ enum ApplicationType: string
             self::Other => 'Other',
         };
     }
+
+    public function collectsHttpTraffic(): bool
+    {
+        return match ($this) {
+            self::Apache, self::Nginx, self::Haproxy => true,
+            default => false,
+        };
+    }
 }

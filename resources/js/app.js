@@ -457,7 +457,7 @@ const renderRecentRequests = (tbody, rows) => {
         const cell = document.createElement('td');
         cell.colSpan = 6;
         cell.className = 'text-secondary';
-        cell.textContent = 'No HTTP requests in this window. The collector tails Apache and Nginx access logs on the host.';
+        cell.textContent = 'Waiting for live HTTP samples. The collector tails Apache access logs and polls server-status every 2 seconds.';
         row.appendChild(cell);
         tbody.appendChild(row);
 
@@ -516,6 +516,12 @@ const refreshApplicationLive = async (root) => {
             target.textContent = formatLiveRate(summary.error_rate);
         } else if (key === 'response_time_avg' || key === 'response_time_p95') {
             target.textContent = formatLiveMs(summary[key]);
+        } else if (key === 'req_per_sec') {
+            const value = payload.runtime?.[key];
+            target.textContent = value === null || value === undefined ? '—' : Number(value).toFixed(2);
+        } else if (key === 'busy_workers' || key === 'idle_workers') {
+            const value = payload.runtime?.[key];
+            target.textContent = value === null || value === undefined ? '—' : formatLiveCount(value);
         } else {
             target.textContent = formatLiveCount(summary[key]);
         }
@@ -540,7 +546,7 @@ const refreshApplicationLive = async (root) => {
     renderRecentRequests(root.querySelector('[data-live-recent]'), payload.recent || []);
 };
 
-const startLivePolling = (element, tick) => {
+const startLivePolling = (element, tick, intervalMs = 5000) => {
     const run = async () => {
         if (document.hidden) {
             return;
@@ -554,9 +560,9 @@ const startLivePolling = (element, tick) => {
     };
 
     run();
-    window.setInterval(run, 5000);
+    window.setInterval(run, intervalMs);
 };
 
 document.querySelectorAll('[data-live-host]').forEach((root) => startLivePolling(root, refreshHostLive));
 document.querySelectorAll('[data-live-hosts]').forEach((root) => startLivePolling(root, refreshHostsIndex));
-document.querySelectorAll('[data-live-application]').forEach((root) => startLivePolling(root, refreshApplicationLive));
+document.querySelectorAll('[data-live-application]').forEach((root) => startLivePolling(root, refreshApplicationLive, 2000));

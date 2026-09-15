@@ -55,7 +55,7 @@ class ApmQuery
                 : $this->summaryFromMetrics($application, $from),
             'charts' => $hasHttpSamples
                 ? $this->chartsFromRequests($requests, $from, $range)
-                : $this->chartsFromMetrics($application, $from),
+                : $this->chartsFromMetrics($application, $from, $range),
             'recent' => $this->recentFrom($application, $requests),
             'has_http_samples' => $hasHttpSamples,
         ];
@@ -220,7 +220,7 @@ class ApmQuery
     /**
      * @return array{requests: array<string, mixed>, errors: array<string, mixed>, latency: array<string, mixed>}
      */
-    private function chartsFromMetrics(Application $application, Carbon $from): array
+    private function chartsFromMetrics(Application $application, Carbon $from, string $range): array
     {
         $samples = ApplicationMetric::query()
             ->where('application_id', $application->id)
@@ -229,8 +229,46 @@ class ApmQuery
             ->orderBy('id')
             ->get();
 
-        $labels = $samples->map(fn (ApplicationMetric $sample): string => $sample->collected_at?->toIso8601String() ?? '')->all();
-        $errorSeries = $this->metricErrorSeries($samples);
+        $bucketMinutes = ApmCatalog::bucketMinutesForRange($range);
+        $labels = $this->timeline($from, now(), $bucketMinutes);
+        $requestSeries = array_fill_keys($labels, 0);
+        $errorBuckets = [];
+        $avgNumerator = array_fill_keys($labels, 0);
+        $avgDenominator = array_fill_keys($labels, 0);
+        $p95Buckets = array_fill_keys($labels, []);
+
+        foreach ($samples as $sample) {
+            $label = $this->bucketLabel($sample->collected_at, $bucketMinutes);
+
+            if (! array_key_exists($label, $requestSeries)) {
+                continue;
+            }
+
+            $requestSeries[$label] += $sample->request_count;
+            $avgNumerator[$label] += $sample->request_count * $sample->response_time_avg;
+            $avgDenominator[$label] += $sample->request_count;
+
+            if ($sample->response_time_p95 > 0) {
+                $p95Buckets[$label][] = $sample->response_time_p95;
+            }
+
+            $statusCodes = $sample->status_codes ?? [];
+
+            if ($statusCodes === [] && $sample->error_count > 0) {
+                $errorBuckets['Errors'][$label] = ($errorBuckets['Errors'][$label] ?? 0) + $sample->error_count;
+
+                continue;
+            }
+
+            foreach ($statusCodes as $code => $count) {
+                if ((int) $code >= 400) {
+                    $errorBuckets[(string) $code][$label] = ($errorBuckets[(string) $code][$label] ?? 0) + (int) $count;
+                }
+            }
+        }
+
+        $errorCodes = array_keys($errorBuckets);
+        sort($errorCodes);
 
         return [
             'requests' => [
@@ -239,15 +277,27 @@ class ApmQuery
                 'label' => 'Requests',
                 'unit' => 'count',
                 'labels' => $labels,
-                'values' => $samples->map(fn (ApplicationMetric $sample): int => $sample->request_count)->all(),
+                'values' => array_values($requestSeries),
             ],
             'errors' => [
                 'type' => 'bar',
-                'stacked' => count($errorSeries) > 1,
-                'legend' => count($errorSeries) > 1,
+                'stacked' => count($errorCodes) > 1,
+                'legend' => count($errorCodes) > 1,
                 'unit' => 'count',
                 'labels' => $labels,
-                'series' => $errorSeries,
+                'series' => $errorCodes === []
+                    ? [[
+                        'label' => 'Errors',
+                        'color' => 'red',
+                        'values' => array_fill(0, count($labels), 0),
+                    ]]
+                    : array_map(function (string $code) use ($errorBuckets, $labels): array {
+                        return [
+                            'label' => $code,
+                            'color' => $this->statusColor($code === 'Errors' ? '500' : $code),
+                            'values' => array_map(fn (string $label): int => $errorBuckets[$code][$label] ?? 0, $labels),
+                        ];
+                    }, $errorCodes),
             ],
             'latency' => [
                 'type' => 'line',
@@ -259,56 +309,26 @@ class ApmQuery
                     [
                         'label' => 'Average',
                         'color' => 'blue',
-                        'values' => $samples->map(fn (ApplicationMetric $sample): int => $sample->response_time_avg)->all(),
+                        'values' => array_map(
+                            fn (string $label): int => $avgDenominator[$label] > 0
+                                ? (int) round($avgNumerator[$label] / $avgDenominator[$label])
+                                : 0,
+                            $labels
+                        ),
                     ],
                     [
                         'label' => 'P95',
                         'color' => 'yellow',
-                        'values' => $samples->map(fn (ApplicationMetric $sample): int => $sample->response_time_p95)->all(),
+                        'values' => array_map(
+                            fn (string $label): int => $p95Buckets[$label] === []
+                                ? 0
+                                : (int) round(max($p95Buckets[$label])),
+                            $labels
+                        ),
                     ],
                 ],
             ],
         ];
-    }
-
-    /**
-     * @param  Collection<int, ApplicationMetric>  $samples
-     * @return list<array{label: string, color: string, values: list<int>}>
-     */
-    private function metricErrorSeries(Collection $samples): array
-    {
-        $codes = [];
-
-        foreach ($samples as $sample) {
-            foreach ($sample->status_codes ?? [] as $code => $count) {
-                if ((int) $code >= 400) {
-                    $codes[(string) $code] = true;
-                }
-            }
-        }
-
-        $errorCodes = array_keys($codes);
-        sort($errorCodes);
-
-        if ($errorCodes === []) {
-            return [[
-                'label' => 'Errors',
-                'color' => 'red',
-                'values' => $samples->map(fn (ApplicationMetric $sample): int => $sample->error_count)->all(),
-            ]];
-        }
-
-        return array_map(function (string $code) use ($samples): array {
-            return [
-                'label' => $code,
-                'color' => $this->statusColor($code),
-                'values' => $samples->map(function (ApplicationMetric $sample) use ($code): int {
-                    $statusCodes = $sample->status_codes ?? [];
-
-                    return (int) ($statusCodes[$code] ?? 0);
-                })->all(),
-            ];
-        }, $errorCodes);
     }
 
     /**
