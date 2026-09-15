@@ -1,0 +1,9 @@
+# Lightweight collector for local registration and heartbeats.
+# Copy this file beside saha-agent.php and fill enrollment_token once.
+
+api_url: http://127.0.0.1:8000/api/v1
+enrollment_token: ""
+agent_id: ""
+api_key: ""
+heartbeat_interval: 30
+hostname: ""
