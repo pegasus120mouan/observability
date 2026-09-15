@@ -1,0 +1,83 @@
+# SAHA Observability — deploy to the Apache VPS.
+#
+# GitHub secrets:
+#   SSH_HOST, SSH_USER, SSH_PORT, SSH_PRIVATE_KEY
+#   APP_DIR (optional, default /var/www/html/observability)
+#
+# Do not seed production from CI. Run db:seed --force only when you intend to.
+
+name: Deploy SAHA Observability
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${{ secrets.APP_DIR }}"
+            if [ -z "$APP_DIR" ]; then
+              APP_DIR=/var/www/html/observability
+            fi
+
+            cd "$APP_DIR"
+
+            echo "Deploying SAHA Observability in $APP_DIR"
+
+            git config --global --add safe.directory "$APP_DIR"
+
+            echo "Fetching origin/main..."
+            git fetch --all
+            git reset --hard origin/main
+
+            echo "Installing PHP dependencies..."
+            composer install --no-dev --prefer-dist --no-interaction --optimize-autoloader
+
+            echo "Building frontend assets..."
+            npm ci --ignore-scripts
+            npm run build
+
+            echo "Clearing caches..."
+            php artisan config:clear
+            php artisan cache:clear
+            php artisan view:clear
+            php artisan route:clear
+
+            echo "Running migrations..."
+            php artisan migrate --force
+
+            php artisan storage:link --force || true
+
+            echo "Caching config, routes, and views..."
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+
+            echo "Fixing permissions..."
+            sudo chown -R www-data:www-data storage bootstrap/cache
+            sudo chmod -R 775 storage bootstrap/cache
+
+            echo "Restarting queue workers..."
+            php artisan queue:restart
+            sudo systemctl restart saha-queue || true
+
+            echo "Reloading web server..."
+            sudo systemctl reload apache2 || true
+            sudo systemctl reload php8.3-fpm || sudo systemctl reload php8.2-fpm || sudo systemctl reload php-fpm || true
+
+            echo "Checking /up..."
+            curl -fsS https://observe.objetombrepegasus.online/up >/dev/null
+
+            echo "Deploy finished."

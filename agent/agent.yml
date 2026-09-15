@@ -7,3 +7,4 @@ agent_id: ""
 api_key: ""
 heartbeat_interval: 30
 hostname: ""
+verify_ssl: true

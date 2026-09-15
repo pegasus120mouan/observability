@@ -9,21 +9,35 @@ declare(strict_types=1);
  *
  *   php agent/saha-agent.php
  *   php agent/saha-agent.php --once
+ *
+ * Requires PHP 7.4+ (the SAHA server itself still needs PHP 8.3).
  */
+if (PHP_VERSION_ID < 70400) {
+    fwrite(STDERR, 'saha-agent requires PHP 7.4 or newer. This host has '.PHP_VERSION.".\n");
+    exit(1);
+}
+
 $configPath = __DIR__.DIRECTORY_SEPARATOR.'agent.yml';
 
 if (! is_file($configPath)) {
-    fwrite(STDERR, "Missing agent/agent.yml\n");
+    fwrite(STDERR, "Missing {$configPath}\nCopy agent.yml next to saha-agent.php and set api_url + enrollment_token.\n");
     exit(1);
 }
 
 $config = parseSimpleYaml($configPath);
 $apiUrl = rtrim((string) ($config['api_url'] ?? ''), '/');
 $once = in_array('--once', $argv, true);
+$GLOBALS['saha_verify_ssl'] = ! in_array(strtolower((string) ($config['verify_ssl'] ?? 'true')), ['0', 'false', 'no', 'off'], true);
 
 if ($apiUrl === '') {
     fwrite(STDERR, "api_url is required in agent.yml\n");
     exit(1);
+}
+
+fwrite(STDOUT, "Using {$apiUrl}\n");
+
+if (stripos($apiUrl, '127.0.0.1') !== false || stripos($apiUrl, 'localhost') !== false) {
+    fwrite(STDERR, "api_url points at this machine. Set it to the public SAHA URL, e.g. https://observe.example.com/api/v1\n");
 }
 
 if (($config['agent_id'] ?? '') === '' || ($config['api_key'] ?? '') === '') {
@@ -346,26 +360,95 @@ function request(string $method, string $url, array $payload = [], array $header
 {
     $headers[] = 'Accept: application/json';
     $headers[] = 'Content-Type: application/json';
+    $body = $method === 'GET' ? '' : json_encode($payload, JSON_THROW_ON_ERROR);
+    $verifySsl = (bool) ($GLOBALS['saha_verify_ssl'] ?? true);
 
+    if (function_exists('curl_init')) {
+        $result = requestWithCurl($method, $url, $body, $headers, $verifySsl);
+    } else {
+        $result = requestWithStream($method, $url, $body, $headers, $verifySsl);
+    }
+
+    if ($result['ok'] === false) {
+        return [
+            'success' => false,
+            'message' => $result['error'].' ['.$method.' '.$url.']',
+        ];
+    }
+
+    $decoded = json_decode($result['body'], true);
+
+    return is_array($decoded) ? $decoded : ['success' => false, 'message' => $result['body']];
+}
+
+/**
+ * @param  list<string>  $headers
+ * @return array{ok: bool, body: string, error: string}
+ */
+function requestWithCurl(string $method, string $url, string $body, array $headers, bool $verifySsl): array
+{
+    $curl = curl_init($url);
+
+    if ($curl === false) {
+        return ['ok' => false, 'body' => '', 'error' => 'curl_init failed'];
+    }
+
+    curl_setopt_array($curl, [
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_POSTFIELDS => $method === 'GET' ? null : $body,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_SSL_VERIFYPEER => $verifySsl,
+        CURLOPT_SSL_VERIFYHOST => $verifySsl ? 2 : 0,
+    ]);
+
+    $response = curl_exec($curl);
+    $error = curl_error($curl);
+    curl_close($curl);
+
+    if (! is_string($response)) {
+        return ['ok' => false, 'body' => '', 'error' => $error !== '' ? $error : 'HTTP request failed'];
+    }
+
+    return ['ok' => true, 'body' => $response, 'error' => ''];
+}
+
+/**
+ * @param  list<string>  $headers
+ * @return array{ok: bool, body: string, error: string}
+ */
+function requestWithStream(string $method, string $url, string $body, array $headers, bool $verifySsl): array
+{
     $context = stream_context_create([
         'http' => [
             'method' => $method,
             'header' => implode("\r\n", $headers),
-            'content' => $method === 'GET' ? '' : json_encode($payload, JSON_THROW_ON_ERROR),
+            'content' => $method === 'GET' ? '' : $body,
             'ignore_errors' => true,
             'timeout' => 10,
         ],
+        'ssl' => [
+            'verify_peer' => $verifySsl,
+            'verify_peer_name' => $verifySsl,
+        ],
     ]);
 
-    $body = @file_get_contents($url, false, $context);
+    $response = @file_get_contents($url, false, $context);
 
-    if ($body === false) {
-        return ['success' => false, 'message' => 'HTTP request failed'];
+    if (! is_string($response)) {
+        $last = error_get_last();
+
+        return [
+            'ok' => false,
+            'body' => '',
+            'error' => $last['message'] ?? 'HTTP request failed (enable allow_url_fopen or php-curl)',
+        ];
     }
 
-    $decoded = json_decode($body, true);
-
-    return is_array($decoded) ? $decoded : ['success' => false, 'message' => $body];
+    return ['ok' => true, 'body' => $response, 'error' => ''];
 }
 
 /**
@@ -392,7 +475,7 @@ function detectOperatingSystem(): array
     $values = [];
 
     foreach (explode("\n", $release) as $line) {
-        if (! str_contains($line, '=')) {
+        if (strpos($line, '=') === false) {
             continue;
         }
 
@@ -429,7 +512,7 @@ function parseSimpleYaml(string $path): array
     foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
         $line = trim($line);
 
-        if ($line === '' || str_starts_with($line, '#')) {
+        if ($line === '' || (isset($line[0]) && $line[0] === '#')) {
             continue;
         }
 
@@ -445,7 +528,7 @@ function parseSimpleYaml(string $path): array
  */
 function writeSimpleYaml(string $path, array $config): void
 {
-    $order = ['api_url', 'enrollment_token', 'agent_id', 'api_key', 'heartbeat_interval', 'hostname'];
+    $order = ['api_url', 'enrollment_token', 'agent_id', 'api_key', 'heartbeat_interval', 'hostname', 'verify_ssl'];
     $lines = [
         '# Generated by saha-agent.php. Keep api_key private.',
         '',
