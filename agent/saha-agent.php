@@ -51,6 +51,7 @@ do {
     reportMetrics($apiUrl, $config);
     reportLogs($apiUrl, $config);
     reportServices($apiUrl, $config);
+    reportHttpRequests($apiUrl, $config);
     if ($once) {
         break;
     }
@@ -204,6 +205,267 @@ function reportServices(string $apiUrl, array $config): void
     }
 
     fwrite(STDOUT, '['.gmdate('c').'] Services running='.($response['data']['applications'] ?? 0).' stopped='.($response['data']['stopped'] ?? 0)."\n");
+}
+
+/**
+ * @param  array<string, string>  $config
+ */
+function reportHttpRequests(string $apiUrl, array $config): void
+{
+    $batches = collectHttpRequests($config);
+
+    foreach ($batches as $batch) {
+        $response = request('POST', $apiUrl.'/agent/http-requests', [
+            'timestamp' => gmdate('c'),
+            'name' => $batch['name'],
+            'type' => $batch['type'],
+            'requests' => $batch['requests'],
+        ], [
+            'X-Agent-Id: '.$config['agent_id'],
+            'Authorization: Bearer '.$config['api_key'],
+        ]);
+
+        if (($response['success'] ?? false) !== true) {
+            fwrite(STDERR, '['.gmdate('c').'] HTTP requests failed: '.json_encode($response)."\n");
+
+            continue;
+        }
+
+        fwrite(STDOUT, '['.gmdate('c').'] HTTP requests '.$batch['name'].' inserted='.($response['data']['inserted'] ?? 0)."\n");
+    }
+}
+
+/**
+ * @param  array<string, string>  $config
+ * @return list<array{name: string, type: string, requests: list<array<string, mixed>>}>
+ */
+function collectHttpRequests(array $config): array
+{
+    $statePath = __DIR__.DIRECTORY_SEPARATOR.'saha-access-log.offset.json';
+    $state = readJsonFile($statePath);
+    $batches = [];
+
+    foreach (httpAccessLogSources($config) as $source) {
+        $tailed = tailAccessLog($source['path'], $state);
+
+        if ($tailed['requests'] === []) {
+            $state = $tailed['state'];
+
+            continue;
+        }
+
+        $batches[] = [
+            'name' => $source['name'],
+            'type' => $source['type'],
+            'requests' => $tailed['requests'],
+        ];
+        $state = $tailed['state'];
+    }
+
+    writeJsonFile($statePath, $state);
+
+    return $batches;
+}
+
+/**
+ * @param  array<string, string>  $config
+ * @return list<array{path: string, name: string, type: string}>
+ */
+function httpAccessLogSources(array $config): array
+{
+    $catalog = [
+        [
+            'key' => 'access_log_apache',
+            'name' => 'Apache',
+            'type' => 'apache',
+            'defaults' => [
+                '/var/log/apache2/other_vhosts_access.log',
+                '/var/log/apache2/access.log',
+                '/var/log/httpd/access_log',
+                '/var/log/httpd/access.log',
+            ],
+        ],
+        [
+            'key' => 'access_log_nginx',
+            'name' => 'Nginx',
+            'type' => 'nginx',
+            'defaults' => [
+                '/var/log/nginx/access.log',
+            ],
+        ],
+    ];
+    $sources = [];
+
+    foreach ($catalog as $entry) {
+        $configured = trim((string) ($config[$entry['key']] ?? ''));
+        $paths = $configured !== '' ? [$configured] : $entry['defaults'];
+
+        foreach ($paths as $path) {
+            if (is_readable($path)) {
+                $sources[] = [
+                    'path' => $path,
+                    'name' => $entry['name'],
+                    'type' => $entry['type'],
+                ];
+            }
+        }
+    }
+
+    return $sources;
+}
+
+/**
+ * @param  array<string, int>  $state
+ * @return array{requests: list<array<string, mixed>>, state: array<string, int>}
+ */
+function tailAccessLog(string $path, array $state): array
+{
+    $size = @filesize($path);
+
+    if (! is_int($size) || $size < 1) {
+        return ['requests' => [], 'state' => $state];
+    }
+
+    if (! array_key_exists($path, $state)) {
+        $state[$path] = $size;
+
+        return ['requests' => [], 'state' => $state];
+    }
+
+    $offset = (int) $state[$path];
+
+    if ($size < $offset) {
+        $offset = 0;
+    }
+
+    if ($size <= $offset) {
+        $state[$path] = $size;
+
+        return ['requests' => [], 'state' => $state];
+    }
+
+    $handle = @fopen($path, 'rb');
+
+    if ($handle === false) {
+        return ['requests' => [], 'state' => $state];
+    }
+
+    fseek($handle, $offset);
+    $chunk = stream_get_contents($handle);
+    fclose($handle);
+
+    if (! is_string($chunk) || $chunk === '') {
+        return ['requests' => [], 'state' => $state];
+    }
+
+    $complete = $chunk;
+
+    if (substr($chunk, -1) !== "\n") {
+        $lastNewline = strrpos($chunk, "\n");
+
+        if ($lastNewline === false) {
+            return ['requests' => [], 'state' => $state];
+        }
+
+        $complete = substr($chunk, 0, $lastNewline + 1);
+    }
+
+    $lines = preg_split("/\r\n|\n|\r/", rtrim($complete, "\r\n")) ?: [];
+    $requests = [];
+    $consumed = 0;
+    $max = 200;
+
+    foreach ($lines as $line) {
+        if ($line === '') {
+            $consumed += 1;
+
+            continue;
+        }
+
+        if (count($requests) >= $max) {
+            break;
+        }
+
+        $parsed = parseAccessLogLine($line);
+
+        if ($parsed !== null) {
+            $requests[] = $parsed;
+        }
+
+        $consumed += strlen($line) + 1;
+    }
+
+    $state[$path] = $offset + $consumed;
+
+    return ['requests' => $requests, 'state' => $state];
+}
+
+/**
+ * @return array{occurred_at: string, method: string, resource: string, status_code: int, duration_us: int}|null
+ */
+function parseAccessLogLine(string $line): ?array
+{
+    if (preg_match('/\[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2} [+\-]\d{4})\]\s+"(\S+)\s+(\S+)(?:\s+HTTP\/[0-9.]+)?"\s+(\d{3})\s+(\S+)(.*)$/', $line, $matches) !== 1) {
+        return null;
+    }
+
+    $occurred = \DateTime::createFromFormat('d/M/Y:H:i:s O', $matches[1]);
+    $resource = $matches[3];
+    $query = strpos($resource, '?');
+
+    if ($query !== false) {
+        $resource = substr($resource, 0, $query);
+    }
+
+    if (strlen($resource) > 512) {
+        $resource = substr($resource, 0, 512);
+    }
+
+    $durationUs = 0;
+    $rest = ltrim($matches[6]);
+
+    if ($rest !== '' && isset($rest[0]) && $rest[0] !== '"' && preg_match('/^(\d+(?:\.\d+)?)/', $rest, $duration) === 1) {
+        $durationUs = durationToMicroseconds($duration[1]);
+    }
+
+    return [
+        'occurred_at' => $occurred instanceof \DateTime ? $occurred->format('c') : gmdate('c'),
+        'method' => strtoupper($matches[2]),
+        'resource' => $resource !== '' ? $resource : '/',
+        'status_code' => (int) $matches[4],
+        'duration_us' => $durationUs,
+    ];
+}
+
+function durationToMicroseconds(string $raw): int
+{
+    if (strpos($raw, '.') !== false) {
+        return (int) round((float) $raw * 1000000);
+    }
+
+    return (int) $raw;
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function readJsonFile(string $path): array
+{
+    if (! is_file($path)) {
+        return [];
+    }
+
+    $decoded = json_decode((string) file_get_contents($path), true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+/**
+ * @param  array<string, mixed>  $data
+ */
+function writeJsonFile(string $path, array $data): void
+{
+    file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT));
 }
 
 /**

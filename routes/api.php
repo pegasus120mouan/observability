@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\Agent\ApmController;
 use App\Http\Controllers\Api\V1\Agent\ConfigController;
 use App\Http\Controllers\Api\V1\Agent\HeartbeatController;
+use App\Http\Controllers\Api\V1\Agent\HttpRequestsController;
 use App\Http\Controllers\Api\V1\Agent\LogsController as AgentLogsController;
 use App\Http\Controllers\Api\V1\Agent\MetricsController;
 use App\Http\Controllers\Api\V1\Agent\RegisterController;
@@ -35,6 +36,9 @@ Route::prefix('v1')->group(function () {
         ->middleware(['agent', 'throttle:agent-apm']);
 
     Route::post('agent/services', ServicesController::class)
+        ->middleware(['agent', 'throttle:agent-apm']);
+
+    Route::post('agent/http-requests', HttpRequestsController::class)
         ->middleware(['agent', 'throttle:agent-apm']);
 
     Route::middleware(['auth:sanctum', 'active.user', 'tenant'])->group(function () {

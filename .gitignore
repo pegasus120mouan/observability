@@ -1,4 +1,5 @@
 *.log
+agent/saha-access-log.offset.json
 .DS_Store
 .env
 .env.backup

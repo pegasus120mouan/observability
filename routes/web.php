@@ -67,6 +67,7 @@ Route::middleware(['auth', 'active.user', 'tenant'])->group(function () {
     Route::get('applications', [ApplicationController::class, 'index'])->name('applications.index');
     Route::get('applications/create', [ApplicationController::class, 'create'])->name('applications.create');
     Route::post('applications', [ApplicationController::class, 'store'])->name('applications.store');
+    Route::get('applications/{application}/live', [ApplicationController::class, 'live'])->name('applications.live');
     Route::get('applications/{application}', [ApplicationController::class, 'show'])->name('applications.show');
     Route::get('applications/{application}/edit', [ApplicationController::class, 'edit'])->name('applications.edit');
     Route::put('applications/{application}', [ApplicationController::class, 'update'])->name('applications.update');

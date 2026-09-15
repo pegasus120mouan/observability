@@ -29,7 +29,9 @@ class DiscoverHostServicesAction
             $application = $this->upsert($agent, $host, $payload);
             $application->forceFill([
                 'discovered' => true,
-                'status' => ApplicationStatus::Healthy,
+                'status' => $application->status === ApplicationStatus::Unknown
+                    ? ApplicationStatus::Healthy
+                    : $application->status,
                 'last_seen_at' => $now,
             ])->save();
             $seenIds[] = $application->id;

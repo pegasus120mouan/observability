@@ -22,6 +22,7 @@ Base URL: `{APP_URL}/api/v1`
 | POST | `/agent/metrics` | Agent credentials | 60 / min / agent | Batch CPU/RAM/disk/network samples |
 | POST | `/agent/logs` | Agent credentials | 60 / min / agent | Batch log entries. Paused sources are skipped. |
 | POST | `/agent/services` | Agent credentials | 60 / min / agent | Running daemons (Apache, MySQL, PostgreSQL, …) upserted as applications. |
+| POST | `/agent/http-requests` | Agent credentials | 60 / min / agent | Access-log HTTP samples for Apache/Nginx request, error, and latency charts. |
 
 ### Register body
 
@@ -75,7 +76,7 @@ The script writes `agent_id` and `api_key` back into `agent.yml` and clears the 
 
 Windows Task Scheduler or a Linux cron can invoke `php agent/saha-agent.php --once` on the heartbeat interval if you do not want a long-running process.
 
-The collector also POSTs `/agent/metrics`, `/agent/logs`, and `/agent/services` after each heartbeat.
+The collector also POSTs `/agent/metrics`, `/agent/logs`, `/agent/services`, and `/agent/http-requests` after each heartbeat. Apache and Nginx access logs are tailed from the first run (existing history is skipped). Override paths with `access_log_apache` and `access_log_nginx` in `agent.yml`. Duration is sent when the log includes Apache `%D` or Nginx `$request_time`.
 
 ## Later
 

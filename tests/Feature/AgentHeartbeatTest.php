@@ -89,6 +89,7 @@ class AgentHeartbeatTest extends TestCase
             ->assertJsonPath('data.agent_id', $agent->agent_uid)
             ->assertJsonPath('data.collectors.cpu', true)
             ->assertJsonPath('data.collectors.logs', true)
-            ->assertJsonPath('data.collectors.apm', true);
+            ->assertJsonPath('data.collectors.apm', true)
+            ->assertJsonPath('data.collectors.http_requests', true);
     }
 }

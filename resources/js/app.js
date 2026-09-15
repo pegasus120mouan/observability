@@ -169,13 +169,17 @@ Chart.defaults.font.family = "'IBM Plex Sans', 'Segoe UI', sans-serif";
 Chart.defaults.font.size = 11;
 Chart.defaults.animation = false;
 
-document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
-    const config = JSON.parse(canvas.getAttribute('data-config') || '{}');
+const mountMetricChart = (canvas, config) => {
+    if (canvas._sahaChart) {
+        canvas._sahaChart.destroy();
+    }
+
     const unit = normalizeUnit(config.unit);
     const type = config.type === 'bar' ? 'bar' : 'line';
     const series = seriesFrom(config);
     const filled = config.fill !== false && type === 'line' && series.length === 1;
     const showLegend = config.legend === true || series.length > 1;
+    const stacked = config.stacked === true;
     const peak = series
         .flatMap((item) => item.values || [])
         .reduce((max, value) => (Number.isFinite(Number(value)) && Number(value) > max ? Number(value) : max), 0);
@@ -198,7 +202,7 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
                         borderRadius: 0,
                         barPercentage: 0.9,
                         categoryPercentage: 0.9,
-                        maxBarThickness: 10,
+                        maxBarThickness: stacked ? 16 : 10,
                     };
                 }
 
@@ -256,7 +260,7 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
             },
             scales: {
                 x: {
-                    stacked: false,
+                    stacked,
                     border: { display: false },
                     ticks: {
                         color: muted(),
@@ -270,6 +274,7 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
                     grid: { display: false },
                 },
                 y: {
+                    stacked,
                     border: { display: false },
                     beginAtZero: true,
                     grace: '6%',
@@ -290,6 +295,31 @@ document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
     });
 
     canvas._sahaChart = chart;
+};
+
+const updateMetricChart = (canvas, chartConfig) => {
+    if (!canvas || !chartConfig) {
+        return;
+    }
+
+    const series = seriesFrom(chartConfig);
+    const chart = canvas._sahaChart;
+    const nextType = chartConfig.type === 'bar' ? 'bar' : 'line';
+
+    if (!chart || chart.config.type !== nextType || chart.data.datasets.length !== series.length) {
+        mountMetricChart(canvas, chartConfig);
+        return;
+    }
+
+    chart.data.labels = chartConfig.labels || [];
+    series.forEach((item, index) => {
+        chart.data.datasets[index].data = item.values || [];
+    });
+    chart.update('none');
+};
+
+document.querySelectorAll('[data-metric-chart]').forEach((canvas) => {
+    mountMetricChart(canvas, JSON.parse(canvas.getAttribute('data-config') || '{}'));
 });
 
 const formatLivePercent = (value) => {
@@ -339,16 +369,7 @@ const refreshHostLive = async (root) => {
     );
 
     Object.entries(payload.charts || {}).forEach(([key, chartConfig]) => {
-        const canvas = root.querySelector(`[data-metric-chart][data-chart-key="${key}"]`);
-        const chart = canvas?._sahaChart;
-
-        if (!chart || !chartConfig) {
-            return;
-        }
-
-        chart.data.labels = chartConfig.labels || [];
-        chart.data.datasets[0].data = chartConfig.values || [];
-        chart.update('none');
+        updateMetricChart(root.querySelector(`[data-metric-chart][data-chart-key="${key}"]`), chartConfig);
     });
 };
 
@@ -406,6 +427,119 @@ const refreshHostsIndex = async (root) => {
     });
 };
 
+const formatLiveCount = (value) => Number(value || 0).toLocaleString();
+
+const formatLiveRate = (value) => `${Number(value || 0).toFixed(1)}%`;
+
+const formatLiveMs = (value) => `${Number(value || 0).toLocaleString()} ms`;
+
+const statusBadgeClass = (code) => {
+    if (code >= 500) {
+        return 'badge text-bg-danger';
+    }
+
+    if (code >= 400) {
+        return 'badge text-bg-warning';
+    }
+
+    return 'badge text-bg-success';
+};
+
+const renderRecentRequests = (tbody, rows) => {
+    if (!tbody) {
+        return;
+    }
+
+    tbody.replaceChildren();
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 6;
+        cell.className = 'text-secondary';
+        cell.textContent = 'No HTTP requests in this window. The collector tails Apache and Nginx access logs on the host.';
+        row.appendChild(cell);
+        tbody.appendChild(row);
+
+        return;
+    }
+
+    rows.forEach((hit) => {
+        const row = document.createElement('tr');
+        [
+            ['text-nowrap small', hit.occurred_at_label || ''],
+            ['', hit.service || ''],
+            ['small text-break', hit.resource || ''],
+            ['text-nowrap', hit.duration_label || '—'],
+            ['', hit.method || '—'],
+        ].forEach(([className, text]) => {
+            const cell = document.createElement('td');
+            cell.className = className;
+            cell.textContent = text;
+            row.appendChild(cell);
+        });
+
+        const statusCell = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = statusBadgeClass(Number(hit.status_code));
+        badge.textContent = String(hit.status_code ?? '');
+        statusCell.appendChild(badge);
+        row.appendChild(statusCell);
+        tbody.appendChild(row);
+    });
+};
+
+const refreshApplicationLive = async (root) => {
+    const url = new URL(root.getAttribute('data-live-application'), window.location.origin);
+    url.searchParams.set('range', root.getAttribute('data-live-range') || '15m');
+
+    const response = await fetch(url.toString(), {
+        headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    });
+
+    if (!response.ok) {
+        return;
+    }
+
+    const payload = await response.json();
+    const summary = payload.summary || {};
+
+    root.querySelectorAll('[data-live-kpi]').forEach((card) => {
+        const key = card.getAttribute('data-live-kpi');
+        const target = card.querySelector('.stat-card-value');
+
+        if (!target) {
+            return;
+        }
+
+        if (key === 'error_rate') {
+            target.textContent = formatLiveRate(summary.error_rate);
+        } else if (key === 'response_time_avg' || key === 'response_time_p95') {
+            target.textContent = formatLiveMs(summary[key]);
+        } else {
+            target.textContent = formatLiveCount(summary[key]);
+        }
+    });
+
+    applyStatusBadge(
+        root.querySelector('[data-live-status]'),
+        payload.status_label,
+        payload.status_variant,
+    );
+
+    const lastSeen = root.querySelector('[data-live-last-seen]');
+
+    if (lastSeen && payload.last_seen_at) {
+        lastSeen.textContent = payload.last_seen_at;
+    }
+
+    Object.entries(payload.charts || {}).forEach(([key, chartConfig]) => {
+        updateMetricChart(root.querySelector(`[data-metric-chart][data-chart-key="${key}"]`), chartConfig);
+    });
+
+    renderRecentRequests(root.querySelector('[data-live-recent]'), payload.recent || []);
+};
+
 const startLivePolling = (element, tick) => {
     const run = async () => {
         if (document.hidden) {
@@ -425,3 +559,4 @@ const startLivePolling = (element, tick) => {
 
 document.querySelectorAll('[data-live-host]').forEach((root) => startLivePolling(root, refreshHostLive));
 document.querySelectorAll('[data-live-hosts]').forEach((root) => startLivePolling(root, refreshHostsIndex));
+document.querySelectorAll('[data-live-application]').forEach((root) => startLivePolling(root, refreshApplicationLive));

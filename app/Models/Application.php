@@ -70,4 +70,12 @@ class Application extends Model
     {
         return $this->hasMany(ApplicationMetric::class);
     }
+
+    /**
+     * @return HasMany<ApplicationRequest, $this>
+     */
+    public function requests(): HasMany
+    {
+        return $this->hasMany(ApplicationRequest::class);
+    }
 }

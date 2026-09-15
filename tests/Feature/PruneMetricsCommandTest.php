@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\MetricType;
 use App\Models\Application;
 use App\Models\ApplicationMetric;
+use App\Models\ApplicationRequest;
 use App\Models\MetricSample;
 use App\Models\Organization;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -71,5 +72,29 @@ class PruneMetricsCommandTest extends TestCase
 
         $this->assertSame(1, ApplicationMetric::query()->withoutGlobalScopes()->count());
         $this->assertSame(20, ApplicationMetric::query()->withoutGlobalScopes()->value('request_count'));
+    }
+
+    public function test_prunes_application_requests_older_than_organization_retention(): void
+    {
+        $organization = Organization::factory()->create([
+            'metric_retention_days' => 7,
+        ]);
+        $application = Application::factory()->forOrganization($organization)->create();
+
+        ApplicationRequest::factory()->forApplication($application)->create([
+            'occurred_at' => now()->subDays(10),
+            'resource' => '/old',
+        ]);
+        ApplicationRequest::factory()->forApplication($application)->create([
+            'occurred_at' => now()->subDay(),
+            'resource' => '/recent',
+        ]);
+
+        $this->artisan('metrics:prune')
+            ->expectsOutput('Pruned 1 application requests.')
+            ->assertSuccessful();
+
+        $this->assertSame(1, ApplicationRequest::query()->withoutGlobalScopes()->count());
+        $this->assertSame('/recent', ApplicationRequest::query()->withoutGlobalScopes()->value('resource'));
     }
 }

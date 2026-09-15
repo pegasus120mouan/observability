@@ -16,6 +16,7 @@ use App\Services\ApmQuery;
 use App\Services\AuditLogger;
 use App\Support\ApmCatalog;
 use App\Support\TenantContext;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -75,16 +76,32 @@ class ApplicationController extends Controller
 
         $application->load('host');
 
-        $hours = ApmCatalog::hoursForRange((string) $request->query('range', '6h'));
-        $from = now()->subHours($hours);
+        $range = $this->resolvedRange($request);
+        $snapshot = $query->snapshot($application, ApmCatalog::fromForRange($range), $range);
 
         return view('applications.show', [
             'application' => $application,
-            'range' => array_key_exists((string) $request->query('range', '6h'), ApmCatalog::ranges())
-                ? (string) $request->query('range', '6h')
-                : '6h',
-            'summary' => $query->summary($application, $from),
-            'charts' => $query->charts($application, $from),
+            'range' => $range,
+            'summary' => $snapshot['summary'],
+            'charts' => $snapshot['charts'],
+            'recent' => $snapshot['recent'],
+            'hasHttpSamples' => $snapshot['has_http_samples'],
+        ]);
+    }
+
+    public function live(Request $request, Application $application, ApmQuery $query): JsonResponse
+    {
+        $this->authorize('view', $application);
+
+        $range = $this->resolvedRange($request);
+        $snapshot = $query->snapshot($application, ApmCatalog::fromForRange($range), $range);
+
+        return response()->json([
+            ...$snapshot,
+            'status' => $application->status->value,
+            'status_label' => $application->status->label(),
+            'status_variant' => $application->status->badgeVariant(),
+            'last_seen_at' => $application->last_seen_at?->diffForHumans(),
         ]);
     }
 
@@ -132,5 +149,14 @@ class ApplicationController extends Controller
             'environments' => HostEnvironment::cases(),
             'hosts' => Host::query()->orderBy('hostname')->orderBy('id')->get(),
         ];
+    }
+
+    private function resolvedRange(Request $request): string
+    {
+        $range = (string) $request->query('range', ApmCatalog::defaultRange());
+
+        return array_key_exists($range, ApmCatalog::ranges())
+            ? $range
+            : ApmCatalog::defaultRange();
     }
 }

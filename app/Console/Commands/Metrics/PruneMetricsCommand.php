@@ -3,6 +3,7 @@
 namespace App\Console\Commands\Metrics;
 
 use App\Models\ApplicationMetric;
+use App\Models\ApplicationRequest;
 use App\Models\MetricSample;
 use App\Models\Organization;
 use Illuminate\Console\Attributes\Description;
@@ -20,10 +21,11 @@ class PruneMetricsCommand extends Command
     {
         $deleted = 0;
         $apmDeleted = 0;
+        $requestDeleted = 0;
 
         Organization::query()
             ->orderBy('id')
-            ->each(function (Organization $organization) use (&$deleted, &$apmDeleted): void {
+            ->each(function (Organization $organization) use (&$deleted, &$apmDeleted, &$requestDeleted): void {
                 $cutoff = now()->subDays(max(1, (int) $organization->metric_retention_days));
 
                 $deleted += MetricSample::query()
@@ -37,10 +39,17 @@ class PruneMetricsCommand extends Command
                     ->where('organization_id', $organization->id)
                     ->where('collected_at', '<', $cutoff)
                     ->delete();
+
+                $requestDeleted += ApplicationRequest::query()
+                    ->withoutGlobalScopes()
+                    ->where('organization_id', $organization->id)
+                    ->where('occurred_at', '<', $cutoff)
+                    ->delete();
             });
 
         $this->info("Pruned {$deleted} metric samples.");
         $this->info("Pruned {$apmDeleted} application metrics.");
+        $this->info("Pruned {$requestDeleted} application requests.");
 
         return self::SUCCESS;
     }

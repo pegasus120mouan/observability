@@ -31,6 +31,7 @@ class ConfigController extends Controller
                 'services' => true,
                 'logs' => true,
                 'apm' => true,
+                'http_requests' => true,
             ],
             'host' => [
                 'id' => $agent->host?->id,

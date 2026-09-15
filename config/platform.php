@@ -47,6 +47,7 @@ return [
         'warning_p95_ms' => (int) env('PLATFORM_APM_WARNING_P95_MS', 1000),
         'critical_p95_ms' => (int) env('PLATFORM_APM_CRITICAL_P95_MS', 2000),
         'max_applications_per_request' => (int) env('PLATFORM_APM_MAX_APPLICATIONS', 20),
+        'max_http_requests_per_request' => (int) env('PLATFORM_APM_MAX_HTTP_REQUESTS', 200),
     ],
 
     'logs' => [

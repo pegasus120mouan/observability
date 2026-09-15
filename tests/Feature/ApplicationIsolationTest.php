@@ -47,6 +47,18 @@ class ApplicationIsolationTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_cross_tenant_application_live_returns_404(): void
+    {
+        $acme = Organization::factory()->create();
+        $globex = Organization::factory()->create();
+        $admin = $this->createMember(RoleName::Admin, $acme);
+        $foreign = Application::factory()->forOrganization($globex)->create(['name' => 'secret application']);
+
+        $this->actingAsMember($admin, $acme)
+            ->getJson(route('applications.live', $foreign))
+            ->assertNotFound();
+    }
+
     public function test_cross_tenant_application_update_returns_404(): void
     {
         $acme = Organization::factory()->create();

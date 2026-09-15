@@ -4,24 +4,57 @@ namespace App\Support;
 
 use App\Enums\ApmSpanKind;
 use App\Enums\ApplicationStatus;
+use Illuminate\Support\Carbon;
 
 final class ApmCatalog
 {
     /**
-     * @return array<string, int>
+     * @return array<string, string>
      */
     public static function ranges(): array
     {
         return [
-            '1h' => 1,
-            '6h' => 6,
-            '24h' => 24,
+            '15m' => 'Last 15 minutes',
+            '1h' => 'Last 1 hour',
+            '6h' => 'Last 6 hours',
+            '24h' => 'Last 24 hours',
         ];
+    }
+
+    public static function defaultRange(): string
+    {
+        return '15m';
     }
 
     public static function hoursForRange(string $range): int
     {
-        return self::ranges()[$range] ?? 6;
+        return match ($range) {
+            '1h' => 1,
+            '6h' => 6,
+            '24h' => 24,
+            default => 6,
+        };
+    }
+
+    public static function fromForRange(string $range): Carbon
+    {
+        return match ($range) {
+            '15m' => now()->subMinutes(15),
+            '1h' => now()->subHour(),
+            '6h' => now()->subHours(6),
+            '24h' => now()->subHours(24),
+            default => now()->subMinutes(15),
+        };
+    }
+
+    public static function bucketMinutesForRange(string $range): int
+    {
+        return match ($range) {
+            '15m', '1h' => 1,
+            '6h' => 5,
+            '24h' => 15,
+            default => 1,
+        };
     }
 
     public static function warningErrorRate(): float
@@ -47,6 +80,16 @@ final class ApmCatalog
     public static function maxApplicationsPerRequest(): int
     {
         return (int) config('platform.apm.max_applications_per_request', 20);
+    }
+
+    public static function maxHttpRequestsPerRequest(): int
+    {
+        return (int) config('platform.apm.max_http_requests_per_request', 200);
+    }
+
+    public static function recentRequestLimit(): int
+    {
+        return 50;
     }
 
     public static function errorRate(int $requestCount, int $errorCount): float
@@ -80,6 +123,40 @@ final class ApmCatalog
     public static function isAllowedStatusCode(string $code): bool
     {
         return (bool) preg_match('/^[1-5][0-9]{2}$/', $code);
+    }
+
+    /**
+     * @param  list<int|float>  $values
+     */
+    public static function percentile(array $values, float $percentile): int
+    {
+        if ($values === []) {
+            return 0;
+        }
+
+        sort($values);
+        $index = (int) round((max(0, min(100, $percentile)) / 100) * (count($values) - 1));
+
+        return (int) round($values[$index]);
+    }
+
+    public static function formatDurationUs(int $microseconds): string
+    {
+        if ($microseconds < 1) {
+            return '—';
+        }
+
+        $milliseconds = $microseconds / 1000;
+
+        if ($milliseconds >= 1000) {
+            return number_format($milliseconds / 1000, $milliseconds >= 10_000 ? 0 : 2).' s';
+        }
+
+        if ($milliseconds >= 10) {
+            return number_format($milliseconds, 0).' ms';
+        }
+
+        return number_format($milliseconds, 2).' ms';
     }
 
     /**
