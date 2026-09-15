@@ -50,6 +50,7 @@ do {
     heartbeat($apiUrl, $config);
     reportMetrics($apiUrl, $config);
     reportLogs($apiUrl, $config);
+    reportServices($apiUrl, $config);
     if ($once) {
         break;
     }
@@ -179,6 +180,30 @@ function reportLogs(string $apiUrl, array $config): void
     }
 
     fwrite(STDOUT, '['.gmdate('c').'] Logs inserted='.($response['data']['inserted'] ?? 0).' skipped='.($response['data']['skipped'] ?? 0)."\n");
+}
+
+/**
+ * @param  array<string, string>  $config
+ */
+function reportServices(string $apiUrl, array $config): void
+{
+    $services = collectRunningServices();
+
+    $response = request('POST', $apiUrl.'/agent/services', [
+        'timestamp' => gmdate('c'),
+        'services' => $services,
+    ], [
+        'X-Agent-Id: '.$config['agent_id'],
+        'Authorization: Bearer '.$config['api_key'],
+    ]);
+
+    if (($response['success'] ?? false) !== true) {
+        fwrite(STDERR, '['.gmdate('c').'] Services failed: '.json_encode($response)."\n");
+
+        return;
+    }
+
+    fwrite(STDOUT, '['.gmdate('c').'] Services running='.($response['data']['applications'] ?? 0).' stopped='.($response['data']['stopped'] ?? 0)."\n");
 }
 
 /**
@@ -423,6 +448,104 @@ function collectMemory(): ?array
         'used' => $used,
         'usage' => $totalBytes > 0 ? round(($used / $totalBytes) * 100, 2) : 0.0,
     ];
+}
+
+/**
+ * @return list<array{name: string, type: string}>
+ */
+function collectRunningServices(): array
+{
+    $catalog = [
+        ['needles' => ['apache2', 'httpd'], 'name' => 'Apache', 'type' => 'apache'],
+        ['needles' => ['nginx'], 'name' => 'Nginx', 'type' => 'nginx'],
+        ['needles' => ['mysqld', 'mariadbd'], 'name' => 'MySQL', 'type' => 'mysql'],
+        ['needles' => ['postgres', 'postmaster'], 'name' => 'PostgreSQL', 'type' => 'postgres'],
+        ['needles' => ['redis-server'], 'name' => 'Redis', 'type' => 'redis'],
+        ['needles' => ['php-fpm'], 'name' => 'PHP-FPM', 'type' => 'php_fpm'],
+        ['needles' => ['mongod'], 'name' => 'MongoDB', 'type' => 'mongodb'],
+        ['needles' => ['dockerd'], 'name' => 'Docker', 'type' => 'docker'],
+        ['needles' => ['memcached'], 'name' => 'Memcached', 'type' => 'memcached'],
+        ['needles' => ['haproxy'], 'name' => 'HAProxy', 'type' => 'haproxy'],
+        ['needles' => ['caddy'], 'name' => 'Caddy', 'type' => 'other'],
+        ['needles' => ['lighttpd'], 'name' => 'Lighttpd', 'type' => 'other'],
+        ['needles' => ['varnishd'], 'name' => 'Varnish', 'type' => 'other'],
+        ['needles' => ['rabbitmq-server', 'beam.smp'], 'name' => 'RabbitMQ', 'type' => 'other'],
+        ['needles' => ['elasticsearch'], 'name' => 'Elasticsearch', 'type' => 'other'],
+    ];
+
+    $found = [];
+
+    foreach (runningProcessNames() as $command) {
+        $match = matchRunningService($command, $catalog);
+
+        if ($match === null) {
+            continue;
+        }
+
+        $found[$match['type'].'|'.$match['name']] = $match;
+    }
+
+    return array_values($found);
+}
+
+/**
+ * @param  list<array{needles: list<string>, name: string, type: string}>  $catalog
+ * @return array{name: string, type: string}|null
+ */
+function matchRunningService(string $command, array $catalog): ?array
+{
+    $normalized = strtolower(str_replace('\\', '/', $command));
+    $base = basename($normalized);
+    $base = preg_replace('/\.exe$/', '', $base) ?: $base;
+
+    foreach ($catalog as $service) {
+        foreach ($service['needles'] as $needle) {
+            if ($base === $needle || strpos($base, $needle) === 0) {
+                return [
+                    'name' => $service['name'],
+                    'type' => $service['type'],
+                ];
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * @return list<string>
+ */
+function runningProcessNames(): array
+{
+    if (PHP_OS_FAMILY === 'Windows') {
+        $output = @shell_exec('tasklist /FO CSV /NH');
+
+        if (! is_string($output) || $output === '') {
+            return [];
+        }
+
+        $names = [];
+
+        foreach (preg_split('/\r\n|\n|\r/', trim($output)) ?: [] as $line) {
+            if (preg_match('/^"([^"]+)"/', $line, $matches) === 1) {
+                $names[] = $matches[1];
+            }
+        }
+
+        return $names;
+    }
+
+    $names = [];
+
+    foreach (glob('/proc/[0-9]*/comm') ?: [] as $file) {
+        $comm = trim((string) @file_get_contents($file));
+
+        if ($comm !== '') {
+            $names[] = $comm;
+        }
+    }
+
+    return $names;
 }
 
 function collectUptime(): ?float

@@ -124,7 +124,6 @@
         </div>
     </div>
 
-    @if ($applications->isNotEmpty())
         <div class="panel mt-3">
             <div class="panel-header">
                 <h2 class="h6 mb-0">Applications</h2>
@@ -132,14 +131,15 @@
                     <a href="{{ route('applications.index') }}" class="small">All applications</a>
                 @endcan
             </div>
-            @foreach ($applications as $application)
+            @forelse ($applications as $application)
                 <div class="activity-item">
                     <a href="{{ route('applications.show', $application) }}" class="fw-semibold text-decoration-none">{{ $application->name }}</a>
-                    <div class="small text-secondary">{{ $application->type->label() }} · {{ $application->environment->label() }}</div>
+                    <div class="small text-secondary">{{ $application->type->label() }} · {{ $application->status->label() }}</div>
                 </div>
-            @endforeach
+            @empty
+                <p class="text-secondary mb-0">No running services reported yet. Keep the agent running.</p>
+            @endforelse
         </div>
-    @endif
 
     <div class="panel mt-3 p-0">
         <div class="panel-header px-3 pt-3 mb-2">

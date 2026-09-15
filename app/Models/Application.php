@@ -24,6 +24,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'endpoint',
     'description',
     'status',
+    'discovered',
     'last_seen_at',
 ])]
 class Application extends Model
@@ -37,6 +38,7 @@ class Application extends Model
     protected $attributes = [
         'environment' => 'production',
         'status' => 'unknown',
+        'discovered' => false,
     ];
 
     /**
@@ -48,6 +50,7 @@ class Application extends Model
             'type' => ApplicationType::class,
             'environment' => HostEnvironment::class,
             'status' => ApplicationStatus::class,
+            'discovered' => 'boolean',
             'last_seen_at' => 'datetime',
         ];
     }

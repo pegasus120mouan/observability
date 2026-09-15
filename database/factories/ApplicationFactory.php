@@ -32,6 +32,7 @@ class ApplicationFactory extends Factory
             'endpoint' => 'https://api.acme.test/orders',
             'description' => 'Order intake API.',
             'status' => ApplicationStatus::Unknown,
+            'discovered' => false,
         ];
     }
 

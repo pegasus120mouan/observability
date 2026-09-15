@@ -2,7 +2,7 @@
 
 @section('content')
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <p class="text-secondary mb-0">Request, error, and latency samples for services in this organization.</p>
+        <p class="text-secondary mb-0">Services discovered by agents, plus APM request and latency samples.</p>
         @can('create', App\Models\Application::class)
             <a class="btn btn-primary btn-sm" href="{{ route('applications.create') }}">New application</a>
         @endcan
@@ -44,7 +44,9 @@
                         <tr>
                             <td>
                                 <a href="{{ route('applications.show', $application) }}" class="fw-semibold text-decoration-none">{{ $application->name }}</a>
-                                @if ($application->endpoint)
+                                @if ($application->discovered)
+                                    <div class="small text-secondary">Discovered on host</div>
+                                @elseif ($application->endpoint)
                                     <div class="small text-secondary">{{ $application->endpoint }}</div>
                                 @endif
                             </td>
@@ -69,7 +71,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="8" class="text-secondary">No applications yet. Register one or send samples from an agent.</td>
+                            <td colspan="8" class="text-secondary">No applications yet. Running services such as Apache, MySQL, and PostgreSQL appear when an agent reports them.</td>
                         </tr>
                     @endforelse
                 </tbody>

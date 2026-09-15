@@ -21,6 +21,7 @@ Base URL: `{APP_URL}/api/v1`
 | GET | `/agent/config` | Agent credentials | same as heartbeat | Heartbeat interval and collector flags |
 | POST | `/agent/metrics` | Agent credentials | 60 / min / agent | Batch CPU/RAM/disk/network samples |
 | POST | `/agent/logs` | Agent credentials | 60 / min / agent | Batch log entries. Paused sources are skipped. |
+| POST | `/agent/services` | Agent credentials | 60 / min / agent | Running daemons (Apache, MySQL, PostgreSQL, …) upserted as applications. |
 
 ### Register body
 
@@ -74,7 +75,7 @@ The script writes `agent_id` and `api_key` back into `agent.yml` and clears the 
 
 Windows Task Scheduler or a Linux cron can invoke `php agent/saha-agent.php --once` on the heartbeat interval if you do not want a long-running process.
 
-The collector also POSTs `/agent/metrics` and `/agent/logs` after each heartbeat.
+The collector also POSTs `/agent/metrics`, `/agent/logs`, and `/agent/services` after each heartbeat.
 
 ## Later
 
